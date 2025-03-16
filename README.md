@@ -28,13 +28,13 @@ I would like to be able to attach after the process has spawned either by reppla
 
 ## Work so far
 
-### Brach tracing
+### Branch tracing
 
-Initially i tried implementing this as a full fledged dynamic instrumentation tool on top of a debugger. This code is located in [track_calls_using_instruction_tracing.py] Instead of stepping each instruction in the debugger, decompiles blocks of the executable and adds breakpoints att all branches. Then when it gets to those branches it adds new breakpoints. This continues forever.
+Initially i tried implementing this as a full fledged dynamic instrumentation tool on top of a debugger. This code is located in [track_calls_using_instruction_tracing.py](track_calls_using_instruction_tracing.py) Instead of stepping each instruction in the debugger, decompiles blocks of the executable and adds breakpoints att all branches. Then when it gets to those branches it adds new breakpoints. This continues forever.
 This proved to be to slow, especially considering the use of python(which is very slow) as the debugger scripting engine.
 
 ### Call tracing
-Th file [track_calls_using_debug_events.py] also traces using breakpoints but it decompiles the entire executable module by module on startup then adds breakpoints on the main executable calls and returns. This has proved to be an effective learning platform. However it will not work if the executable is using self-modifying code.
+Th file [track_calls_using_debug_events.py](track_calls_using_debug_events.py) also traces using breakpoints but it decompiles the entire executable module by module on startup then adds breakpoints on the main executable calls and returns. This has proved to be an effective learning platform. However it will not work if the executable is using self-modifying code.
 
 Both of these implementations have issues with multithreaded code as the debugger will catch any thread and the code has not been written to take that in to account.
 
@@ -62,3 +62,20 @@ You may want to capture multiple of each break point as each function may be cal
 - [x] Initially we looked at directX 9 due to its simplicity, we need to start looking at the reversing of dx11. Maybe we should build a text dx11 project.
 - [ ] We will want to be able to decode the arguments of the API functions we add breakpoints to so that we can differentiate different rendering passes for example. Need to figure out how to do that.
 - [ ] Implement the loop based debugger
+
+
+# Stereo injection
+Many stereo injection plugins for games does alternative frame rendering that is they dont alter the games render code. The mods simply move the camera every other frame aand sends every other frame to each eye.
+This causes almost instant nausea and is a horible experience it is better to simply not have stere at all. Headtracking is 80% of the experience so if you can manage that it is often enogh.
+
+The beter way is to acctaully render the game twice. This can be done in two ways.
+* Traditional Rendering:
+In a basic setup, you’d indeed update the view/projection matrices for each eye and issue separate draw calls. This means the scene is rendered twice—once for each eye.
+* Single-Pass Stereo (Multi-View Rendering):
+With advanced techniques, you can leverage multiple viewports along with instancing. In single-pass stereo, you submit your geometry once and use the GPU to transform it twice (or more) for each eye, each using a different viewport and camera matrix. This reduces CPU overhead by avoiding multiple draw calls even though conceptually, two different views are being produced.
+
+Both generate the same image but **Single-Pass Stereo** is more efficent so will in theory allow for higher FPS. But it can also be allot harder to patch in since you need to modify shader code aswell as the normal game code. **Traditional Rendering** may be easy to pull of depending on how the games rendering works.
+If you are lucky like in the example dx11 file in [example_simple_dx11_render.cpp](example_simple_dx11_render.cpp) you have a clean render function all you need to do is find it, change the camera matrix and run the function an extra time on each loop.
+If you are not able to do that you need to capture all DX11 calls.
+Then either save their buffers and argumensts then run them again or copy all the arguments and buffers and simultaneously run them in a different dx11 instance.
+
