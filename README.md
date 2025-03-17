@@ -45,7 +45,7 @@ It works in reverse based on the assumption that the code you are interested in 
 
 Basically you start by selecting a API call to a dll (direct X) for example.
 1. You add a breakpoint in that API call.
-2. You look at the return adress then decompile from that adress forward until you hit a ret instruction.
+2. You look at the return adress then decompile from that adress forward until you hit a ret instruction. (techinically this might fail as the code may jump away so technically you need to trace every jump after this. But assuming a normal boring compiler just decompiling from that point untill there is ret should work)
 3. You add a breakpoint at that ret instruction
 4. When that breakpoint hits, you obtain the return address from the stack which is from where the current function was called.
 5. Then you step one instruction back from that return address and add a breakpoint.
