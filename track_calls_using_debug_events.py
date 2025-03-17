@@ -210,6 +210,13 @@ def my_event_handler( event ):
                                 tid )
     print (message)
 
+def add_breakpoint(event, pid, address, func):
+    if address not in breaks:
+        event.debug.break_at(pid, address, break_point)
+        breaks[address] = []
+    breaks[address].append(func)
+
+
 def add_breakpoints_to_memmory_region(event, star_adrs, adrs_len):
     print("disasemble code", star_adrs, adrs_len)
 
@@ -226,24 +233,14 @@ def add_breakpoints_to_memmory_region(event, star_adrs, adrs_len):
             call_pos = inst[0]
             next_inst_pos = call_pos + inst[1]
             call_backbakc = partial(call_break, call_id)
-            brak_backback = partial(ret_break, call_id)
+            ret_backback = partial(ret_break, call_id)
 
 
+            add_breakpoint(event, pid, call_pos, call_backbakc)
 
-            if call_pos not in breaks:
-                event.debug.break_at(pid, call_pos, break_point)
-                breaks[call_pos] = []
-            breaks[call_pos].append(call_backbakc)
-
-
-            if next_inst_pos not in breaks:
-                event.debug.break_at(pid, next_inst_pos, break_point)
-                breaks[next_inst_pos] = []
-            breaks[next_inst_pos].append(brak_backback)
+            add_breakpoint(event, pid, next_inst_pos, ret_backback)
 
     print("nr of calls", len(calls))
-
-
 
 def get_function_desc(function_address, label, undecodrated = False):
     global desc_cahce
