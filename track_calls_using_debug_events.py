@@ -1,3 +1,5 @@
+#!/bin/env python
+
 from winappdbg import Debug, HexDump, win32, System
 from functools import partial
 from winappdbg import CrashDump
@@ -48,15 +50,27 @@ pdbs = {}
 pdb_names = {}
 desc_cahce = {}
 breaks = {}
-lookup = None
-def lookup_(addr):
-    return "No lookup"
+modules = {}
+
+def get_base_name(filename):
+    dname = filename.split('\\')[-1]
+    basic_name = dname.split('.')[0].lower()
+    return basic_name
+
+def get_module_from_address(address):
+    found_module = None
+    found_base = -1
+
+    # Find the module with the highest base that is less than or equal to the address.
+    for module, base in modules.items():
+        if base <= address and base > found_base:
+            found_module = module
+            found_base = base
+
+    return found_module
 
 def my_event_handler( event ):
-    global COde_started, lookup
-
-    if lookup is None:
-        lookup = lookup_
+    global COde_started
 
     # Get the process ID where the event occured.
     pid = event.get_pid()
@@ -106,37 +120,37 @@ def my_event_handler( event ):
 
 
     if code in (win32.LOAD_DLL_DEBUG_EVENT, win32.CREATE_PROCESS_DEBUG_EVENT):
-        print(code, filename)
         filename = event.get_filename()
-        dname = filename.split('\\')[-1]
-        basic_name = dname.split('.')[0].lower()
+        basic_name = get_base_name(filename)
         pdb_name = 'pdbs\\'+basic_name+".pdb"
 
 
         base_addr = event.get_module_base()
 
-        #[('pdbs\\d3d9.pdb', 15728640), ('pdbs\\d3d9.pdb', 16777216)]
-
-        #d3d9!0x35c60 => 16997472
-        #16997472-16777216 = 220256 = 0x35c60
+        modules[basic_name] = base_addr
 
         if os.path.exists(pdb_name):
-            print(dname, pdb_name, base_addr)
-            #exit(0)
+            print(basic_name, pdb_name, base_addr)
             pdb_names[basic_name] = base_addr
             if basic_name not in pdbs:
-                pdbs[basic_name] = Lookup([(pdb_name, 0)]).lookup
-            #looks = []
-            #for baddr in pdbs:
-            #    looks.append((pdbs[baddr], baddr))
+                pdbs[basic_name] = Lookup([(pdb_name, 0)])
 
 
+            if basic_name == 'd3d11':
+                print("loading directx11")
+                #print(pdbs[basic_name].names)
+                #exit(1)
 
-            #lookup = Lookup(looks).lookup
+            if basic_name == 'd3d9':
+                print("loading directx9")
+                #print(pdbs[basic_name].names)
+                #exit(1)
+
             #exit(0)
             #pdb.set_trace()
 
     if name == "Single step event":
+        print("dead code")
         capture_call_to(event)
         return
 
@@ -150,59 +164,40 @@ def my_event_handler( event ):
         return
 
     if name == "Process creation event":
+
+        filename = event.get_filename()
+        exe_basic_name = get_base_name(filename)
         call_stack[tid] = []
+        try:
+            process.scan_modules()
+        except Exception as e:
+            print("module_scan failed")
         memoryMap = process.get_memory_map()
         print("get memmory map")
         if True:
             executable_memmory = mem_p(memoryMap)
-            print(executable_memmory)
-            i=0
+
+            print('loaded_modules:', modules, "own_module_name: ", exe_basic_name)
+            print("executable_memmory:", executable_memmory)
+            disasembled_regions = 0
             for star_adrs in executable_memmory:
-                i+=1
-                if i != 1:
-                    continue
-                adrs_len = executable_memmory[star_adrs]
-                print("disasemble code", star_adrs, adrs_len)
-                #continue
-                instructions   = event.get_thread().disassemble( star_adrs, adrs_len)
-                print("adding breakpoints, nr of instructions to check", len(instructions))
-                calls = []
-                for inst in instructions:
-                    #print(inst)
-                    disasm = inst[2]
-                    str_inst = disasm.split(" ")[0]
-                    if str_inst == "call":
-                        call_id = len(calls)
-                        calls.append(inst)
-                        call_pos = inst[0]
-                        #print(inst)
-                        next_inst_pos = call_pos + inst[1]
-                        call_backbakc = partial(call_break, call_id)
-                        brak_backback = partial(ret_break, call_id)
+                #All modules might not have loaded yeat if we are attaching to a pid but the main one has so things should work
+                module_name = get_module_from_address(star_adrs)
+                # Only disasemble the code of the acctual executable
+                #print(module_name, star_adrs)
+                if exe_basic_name == module_name:
+                    # only disasemble the first executable region
+                    # The second part of the memorymap generally seas to be some type of standard library
+                    if disasembled_regions == 0:
+                        adrs_len = executable_memmory[star_adrs]
+                        print("disasembeling: ", module_name, star_adrs, adrs_len)
+                        add_breakpoints_to_memmory_region(event, star_adrs, adrs_len)
+                    disasembled_regions += 1
 
-
-
-                        if call_pos not in breaks:
-                            event.debug.break_at(pid, call_pos, break_point)
-                            breaks[call_pos] = []
-                        breaks[call_pos].append(call_backbakc)
-
-
-                        if next_inst_pos not in breaks:
-                            event.debug.break_at(pid, next_inst_pos, break_point)
-                            breaks[next_inst_pos] = []
-                        breaks[next_inst_pos].append(brak_backback)
-
-                print("nr of calls", len(calls))
-                process.scan_modules()
-                #print(calls)
 
     if name == "Thread creation event":
         call_stack[tid] = []
         process.scan_modules()
-        #threds[tid] = partial(restart_tracing, tid)
-        #event.debug.start_tracing( tid)
-        #event.debug.system.enable_step_on_branch_mode()
 
     # Show a descriptive message to the user.
     print("------------------")
@@ -215,45 +210,67 @@ def my_event_handler( event ):
                                 tid )
     print (message)
 
-def get_function_desc(descriptor, label):
+def add_breakpoints_to_memmory_region(event, star_adrs, adrs_len):
+    print("disasemble code", star_adrs, adrs_len)
+
+    pid = event.get_pid()
+    instructions   = event.get_thread().disassemble( star_adrs, adrs_len)
+    print("adding breakpoints, nr of instructions to check", len(instructions))
+    calls = []
+    for inst in instructions:
+        disasm = inst[2]
+        str_inst = disasm.split(" ")[0]
+        if str_inst == "call":
+            call_id = len(calls)
+            calls.append(inst)
+            call_pos = inst[0]
+            next_inst_pos = call_pos + inst[1]
+            call_backbakc = partial(call_break, call_id)
+            brak_backback = partial(ret_break, call_id)
+
+
+
+            if call_pos not in breaks:
+                event.debug.break_at(pid, call_pos, break_point)
+                breaks[call_pos] = []
+            breaks[call_pos].append(call_backbakc)
+
+
+            if next_inst_pos not in breaks:
+                event.debug.break_at(pid, next_inst_pos, break_point)
+                breaks[next_inst_pos] = []
+            breaks[next_inst_pos].append(brak_backback)
+
+    print("nr of calls", len(calls))
+
+
+
+def get_function_desc(function_address, label, undecodrated = False):
     global desc_cahce
 
     mod = label.split('!')[0]
-    #print(mod)
     if mod not in pdb_names:
         return ""
 
-
-
-    if descriptor in desc_cahce:
-        return desc_cahce[descriptor]
-    #print("lol", descriptor)
-
+    if function_address in desc_cahce:
+        return desc_cahce[function_address]
 
     pdb_base = pdb_names[mod]
-    ofest = descriptor - pdb_base
-    #print(pdb_base, pdbs)
-    full_name = pdbs[mod](ofest)
+    ofest = function_address - pdb_base
+    full_name = pdbs[mod].lookup(ofest)
     func_name = full_name.split("!", 1)
-    #func_name = full_name.split("@")
     func_name_preample = func_name.pop(0)
     func_name = func_name.pop(0)
-    #func_name = "@"+("@".join(func_name))
     undeced = undecorate_symbol(func_name)
-    #print(func_name, undeced)
 
     #if present Remove "public: virtual long __cdecl "
     pts = undeced.split(" __cdecl ")
     undeced = pts[-1]
 
-
     ret = func_name_preample + "!" + undeced
-    #ret = lookup()
-    #exit(0)
-    #if basic_name in pdbs:
-    #    pdbs[basic_name]
-    #ret = "name"
-    desc_cahce[descriptor] = ret
+    if undecodrated:
+        return ret + " " +full_name
+    desc_cahce[function_address] = ret
     return ret
 
 def break_point(event):
@@ -339,9 +356,6 @@ def mem_p(memoryMap):
         else:
             Type    = "Unknown   "
 
-        # Print the memory block information.
-        #fmt = "%s\t%s\t%s\t%s\t%s"
-        #print (fmt % ( BaseAddress, RegionSize, State, Protect, Type ))
     return execs
 
 call_stack = {}
@@ -350,17 +364,11 @@ def read_ptr(process, address):
     """
     Reads a pointer (4 bytes on 32-bit or 8 bytes on 64-bit) from process memory at the given address.
     """
-    # Determine pointer size based on process architecture.
-    #pointer_size = 8 if process.is_64bits() else 4
-    pointer_size = 8
     # Read the pointer-sized data from the process memory.
-    data = process.read(address, pointer_size)
+    data = process.read(address, 8)
 
     # Unpack the data into an integer.
-    #if pointer_size == 8:
     return struct.unpack("<Q", data)[0]
-    #else:
-    #    return struct.unpack("<I", data)[0]
 
 def call_break(call_id, event):
     tid = event.get_tid()
@@ -523,6 +531,7 @@ def restart_tracing(thread_id, event):
     event.debug.start_tracing( event.get_tid() )
     #event.debug.start_tracing_all()
 
+# if process is already started we attch to it otherwise to start it up
 def simple_debugger( argv ):
 
     # Instance a Debug object, passing it the event handler callback.
@@ -530,9 +539,19 @@ def simple_debugger( argv ):
     try:
         aSystem = System()
         aSystem.request_debug_privileges()
+        aSystem.scan_processes()
+        pid = None
+        if len(argv) == 1:
+            executable = argv[0]
+            for ( process, name ) in debug.system.find_processes_by_filename(executable):
+                pid = process.get_pid()
+                print("found pid:", pid, name)
 
-        # Start a new process for debugging.
-        debug.execv( argv )
+        if pid is None:
+            # Start a new process for debugging.
+            debug.execv(argv)
+        else:
+            debug.attach( pid )
 
         # Wait for the debugee to finish.
         debug.loop()
