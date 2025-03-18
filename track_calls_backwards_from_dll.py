@@ -45,6 +45,7 @@ jumps = [
 ]
 
 executable_memmory = {}
+executable_memmory_ids = {}
 
 COde_started = False;
 
@@ -54,12 +55,13 @@ desc_cahce = {}
 breaks = {}
 modules = {}
 
+known_functions = []
+
 calls_to_hook = [
-    '??$TID3D11DeviceContext_Map_@$00@CContext@@SAJPEAUID3D11DeviceContext5@@PEAUID3D11Resource@@IW4D3D11_MAP@@IPEAUD3D11_MAPPED_SUBRESOURCE@@@Z',
-    #we can only do one at the time as each time we add ret break points the next function cant find any ret breakpoints
-    #'??$TID3D11DeviceContext_Unmap_@$00@CContext@@SAXPEAUID3D11DeviceContext5@@PEAUID3D11Resource@@I@Z',
-    #'??$TID3D11DeviceContext_RSSetViewports_@$00@CContext@@SAXPEAUID3D11DeviceContext5@@IPEBUD3D11_VIEWPORT@@@Z',
-    #'??$TID3D11DeviceContext_DrawIndexed_@$00@CContext@@SAXPEAUID3D11DeviceContext5@@IIH@Z'
+    'd3d11!??$TID3D11DeviceContext_Map_@$00@CContext@@SAJPEAUID3D11DeviceContext5@@PEAUID3D11Resource@@IW4D3D11_MAP@@IPEAUD3D11_MAPPED_SUBRESOURCE@@@Z',
+    'd3d11!??$TID3D11DeviceContext_Unmap_@$00@CContext@@SAXPEAUID3D11DeviceContext5@@PEAUID3D11Resource@@I@Z',
+    'd3d11!??$TID3D11DeviceContext_RSSetViewports_@$00@CContext@@SAXPEAUID3D11DeviceContext5@@IPEBUD3D11_VIEWPORT@@@Z',
+    'd3d11!??$TID3D11DeviceContext_DrawIndexed_@$00@CContext@@SAXPEAUID3D11DeviceContext5@@IIH@Z'
 ]
 
 def get_base_name(filename):
@@ -86,25 +88,72 @@ def get_executable_region_from_address(address):
 
     return None, None
 
-def call_tofunc(code, event):
+def call_tofunc(code, inner_func_name, event):
     thread = event.get_thread()
     #context = thread.get_context()
     process = event.get_process()
+    clear_break_points(event)
 
-    str_desc, addr = call_asm2addr(code, thread, process)
-    print("function entry: ", str_desc)
+    str_desc, function_addr = call_asm2addr(code, thread, process)
 
-    #pdb.set_trace()
+    region_start, region_len = get_executable_region_from_address(function_addr)
+    region_id = executable_memmory_ids[region_start]
+    func_region_ofset = function_addr - region_start
+    func_id = str(region_id)+"=>"+str(func_region_ofset)
+    print("function:", inner_func_name, "has parent function: ", func_id)
+
+    known_functions.append(function_addr)
+
+    #Lets add this function to the trace
+    trace_list.append((function_addr, func_id))
+
+    #Lets start another trace
+    pid = event.get_pid()
+    trace_one_func_from_list(event, pid)
+
 
 def api_callback(function_name, event):
-    print("got api callback to:", function_name)
+    #print("got api callback to:", function_name)
     thread = event.get_thread()
     context = thread.get_context()
 
     process = event.get_process()
     return_address = read_ptr(process, context['Rsp'])
     #pdb.set_trace()
+    clear_break_points(event)
     add_ret_breakpoints_to_memmory_region(event, return_address, function_name)
+
+def find_function_parent(address, function_name, event, pid):
+    callback = partial(api_callback, function_name)
+    add_breakpoint(event, pid, address, callback)
+
+def add_pdbs_to_trace_list():
+
+    for full_pdb_name in calls_to_hook:
+        basic_name, func_name = full_pdb_name.split('!')
+
+        found_key = None
+        found_index = None
+        found_addr = None
+        base_addr = modules[basic_name]
+        for (base, limit), items in pdbs[basic_name].names.items():
+            if func_name in items:
+                found_key = (base, limit)
+                found_index = items.index(func_name)
+                found_addr = pdbs[basic_name].locs[base, limit][found_index] + base_addr
+                break
+
+        nice_func_name = undecorate_nice(func_name)
+
+        trace_list.append((found_addr, nice_func_name))
+
+trace_list = []
+def trace_one_func_from_list(event, pid):
+    if len(trace_list) > 0:
+        found_addr, nice_func_name = trace_list.pop(0)
+        #print("tracing function ", nice_func_name," found at:", found_addr)
+        find_function_parent(found_addr, nice_func_name, event, pid)
+
 
 def my_event_handler( event ):
     global COde_started
@@ -178,25 +227,9 @@ def my_event_handler( event ):
             if basic_name == 'd3d11':
                 print("loading directx11")
 
-                for func_name in calls_to_hook:
-                    found_key = None
-                    found_index = None
-                    found_addr = None
-                    for (base, limit), items in pdbs[basic_name].names.items():
-                        if func_name in items:
-                            found_key = (base, limit)
-                            found_index = items.index(func_name)
-                            found_addr = pdbs[basic_name].locs[base, limit][found_index] + base_addr
-                            break
+                add_pdbs_to_trace_list()
+                trace_one_func_from_list(event, pid)
 
-                    nice_func_name = undecorate_nice(func_name)
-
-                    print("function ", nice_func_name," found at:", found_addr)
-                    callback = partial(api_callback, nice_func_name)
-                    add_breakpoint(event, pid, found_addr, callback)
-
-                #print(pdbs[basic_name].names)
-                #exit(1)
 
             if basic_name == 'd3d9':
                 print("loading directx9")
@@ -249,7 +282,7 @@ def my_event_handler( event ):
         process.scan_modules()
 
     # Show a descriptive message to the user.
-    print("------------------")
+    #print("------------------")
     format_string = "%s, %s, (0x%s) at address 0x%s, process %d, thread %d"
     message = format_string % ( name,
                                 filename,
@@ -257,17 +290,24 @@ def my_event_handler( event ):
                                 HexDump.address(address, bits),
                                 pid,
                                 tid )
-    print (message)
+    #print (message)
 
 def update_executable_memmory(process):
-        global executable_memmory
-        #try:
-        #       process.scan_modules()
-        #except Exception as e:
-        #       print("module_scan failed")
+    global executable_memmory, executable_memmory_ids
+    #try:
+    #   process.scan_modules()
+    #except Exception as e:
+    #   print("module_scan failed")
 
-        memoryMap = process.get_memory_map()
-        executable_memmory = mem_p(memoryMap)
+    memoryMap = process.get_memory_map()
+    executable_memmory = mem_p(memoryMap)
+    for start, length in executable_memmory.items():
+        #Generate a id for each executable region
+        modu = get_module_from_address(start)
+        if modu is None:
+            modu = "none"
+        id = modu +"_"+ str(length)+"_"+str(read_ptr(process, start))
+        executable_memmory_ids[start] = id
 
 
 def add_breakpoint(event, pid, address, func):
@@ -277,16 +317,15 @@ def add_breakpoint(event, pid, address, func):
     breaks[address].append(func)
 
 def ret_break_callback(inner_func_name, event):
-    print("got ret callback from inner_func_name:", inner_func_name)
-    print("We now need to clear all the other ret breakpoints that we added")
-    event.debug.erase_all_breakpoints()
+    #print("got ret callback from inner_func_name:", inner_func_name)
+    clear_break_points(event)
     thread = event.get_thread()
     context = thread.get_context()
 
     process = event.get_process()
     return_address = read_ptr(process, context['Rsp'])
 
-    print("return_address from function that contains a api call:", return_address)
+    #print("return_address from function that contains a api call:", return_address)
 
     last_instlen = None
     last_instruct = None
@@ -301,7 +340,7 @@ def ret_break_callback(inner_func_name, event):
             disasm = last_instruct[2]
             str_inst = disasm.split(" ")[0]
             if str_inst == "call":
-                print("found last call:", disasm)
+                #print("found last call:", disasm)
                 last_instlen = last_instruciton_length
                 break
         except Exception as e:
@@ -313,7 +352,7 @@ def ret_break_callback(inner_func_name, event):
     last_instruction_start = return_address - last_instlen
     pid = event.get_pid()
     #here we can either get the function if it is static or add a breakpoint and wait untill that hits
-    calbak = partial(call_tofunc, last_instruct)
+    calbak = partial(call_tofunc, last_instruct, inner_func_name)
     add_breakpoint(event, pid, last_instruction_start, calbak)
 
     memoryMap = process.get_memory_map()
@@ -340,10 +379,16 @@ def add_breakpoint(event, pid, address, func):
 #    pdb.set_trace()
 
 
+def clear_break_points(event):
+    global breaks
+
+    event.debug.erase_all_breakpoints()
+    breaks = {}
+
 
 
 # I picked the search length arbirarrliy probably way to long
-def add_ret_breakpoints_to_memmory_region(event, star_adrs, func_name, adrs_len = 1000000):
+def add_ret_breakpoints_to_memmory_region(event, star_adrs, func_name, adrs_len = 100000):
 
     region_start, region_len = get_executable_region_from_address(star_adrs)
     if region_start is None and region_len is None:
@@ -352,16 +397,22 @@ def add_ret_breakpoints_to_memmory_region(event, star_adrs, func_name, adrs_len 
     search_end = star_adrs + adrs_len
     search_end_pos = min(region_end, search_end)
 
+
+    #Dont search past already known functions this might cause overloaded functions to not be detected
+    for adr in known_functions:
+        len_to_func = adr - star_adrs
+        if len_to_func > 0:
+            search_end_pos = min(search_end_pos, adr)
+
     search_len = search_end_pos - star_adrs
 
-    print(executable_memmory)
-    print("disasemble code", star_adrs, search_len, get_module_from_address(star_adrs))
+    #print("disasemble code", star_adrs, search_len, get_module_from_address(star_adrs))
 
     #exit(1)
 
     pid = event.get_pid()
     instructions   = event.get_thread().disassemble( star_adrs, search_end_pos - star_adrs)
-    print("adding ret breakpoints, nr of instructions to check", len(instructions))
+    #print("adding ret breakpoints, nr of instructions to check", len(instructions))
     rets = []
     for inst in instructions:
         disasm = inst[2]
@@ -376,9 +427,9 @@ def add_ret_breakpoints_to_memmory_region(event, star_adrs, func_name, adrs_len 
 
     nr_rets = len(rets)
     #Rets may be zero as they get replaced with breakpoints
-    #if nr_rets == 0:
-    #    raise ValueError("nr rets should never be zero a function should return at atleast one place")
-    #print("nr of rets", nr_rets)
+    if nr_rets == 0:
+        raise ValueError("nr rets should never be zero a function should return at atleast one place")
+    print("nr of rets", nr_rets)
 
 
 
@@ -573,7 +624,10 @@ def call_asm2addr(code, thread, process):
 
     else:
         label = code[2].split(" ")[1]
-        target_addr = process.resolve_label(label)
+        try:
+            target_addr = process.resolve_label(label)
+        except Exception as e:
+                print(e, code[2], label)
         asm += ' => '+str(target_addr)
 
         name_l = get_function_desc(target_addr, label)
