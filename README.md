@@ -25,6 +25,13 @@ I have been unable to get callgrind to work partly due to how modern games tend 
 
 I would like to be able to attach after the process has spawned either by replacing a dll or simply by attaching a debugger to the process id.
 
+## trace.py
+trace.py traces all calls and rets in a function. Earlier versions tried to use shortcuts but they all had various issues. The point of trace.py is to as good as you are going to get a call tracer when it comes to accuracy. Speed is important but it suposed to be refernce for accuracy.
+
+Some improvments:
+- One thing that can be done that works 100% of the time is to single step the execution, but that is simply to slow. So is not an improvment.
+- There may be some ways that tracing the first instruction in a function could be helpfull to but this is not as easy as it might first seam. The pitfall is that you can jump to the begining of a function and there is no way to know if the last instruction was a call or jmp. You need to look at the stack and the stack pointer to try to figure stuff out. In some cases you might be able to use the stack to figure out what heppend.
+- Adding a memmory access hardwarebreakpoint on the stack pointer. This might be a good idea, but threding might be problematic..
 
 ## Work so far
 
