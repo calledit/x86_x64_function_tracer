@@ -1,0 +1,1144 @@
+>python tracer.py draw_cubedx11.exe
+loaded_modules: 1 own_module_name:  draw_cubedx11
+executable_memmory: 2
+nr functions: 46
+processed ( 0 ) functions...
+ntdll pdbs\ntdll.pdb 140712016412672
+kernel32 pdbs\kernel32.pdb 140711986069504
+user32 pdbs\user32.pdb 140711998259200
+ucrtbase pdbs\ucrtbase.pdb 140711978401792
+d3d11 pdbs\d3d11.pdb 140711898316800
+dxgi pdbs\dxgi.pdb 140711948189696
+unknown break_point called 15032 140712017266593
+error: Breakpoint 2147483651 140712017266593
+thread: 15032  Call to function: draw_cubedx11_31 call_num: 163
+thread: 15032    Exit from function: draw_cubedx11_31
+thread: 15032  Call to function: draw_cubedx11_24 call_num: 140
+thread: 15032    Call to function: draw_cubedx11_39 call_num: 174
+thread: 15032      Exit from function: draw_cubedx11_39
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+9128  API in function: draw_cubedx11_24 call_num: 175
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+9128  API in function: draw_cubedx11_24 call_num: 176
+thread: 15032    Exit from function: draw_cubedx11_24
+thread: 15032  Call to function: draw_cubedx11_23 call_num: 141
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10356  API in function: draw_cubedx11_23 call_num: 173
+thread: 15032    Exit from function: draw_cubedx11_23
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10434  API in function: draw_cubedx11_18 call_num: 142
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10398  API in function: draw_cubedx11_15 call_num: 115
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9104  API in function: draw_cubedx11_15 call_num: 116
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10452  API in function: draw_cubedx11_15 call_num: 117
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9092  API in function: draw_cubedx11_15 call_num: 118
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10488  API in function: draw_cubedx11_15 call_num: 119
+thread: 15032  Call to function: draw_cubedx11_25 call_num: 120
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10356  API in function: draw_cubedx11_25 call_num: 178
+thread: 15032    Exit from function: draw_cubedx11_25
+thread: 15032  Call to function: draw_cubedx11_37 call_num: 121
+thread: 15032    Exit from function: draw_cubedx11_37
+thread: 15032  Call to function: draw_cubedx11_30 call_num: 122
+thread: 15032    Call to function: draw_cubedx11_29 call_num: 187
+thread: 15032      Call to:  draw_cubedx11_4E1D7BE2+10506  API in function: draw_cubedx11_29 call_num: 185
+thread: 15032      Exit from function: draw_cubedx11_29
+thread: 15032    Exit from function: draw_cubedx11_30
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9096  API in function: draw_cubedx11_15 call_num: 123
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10410  API in function: draw_cubedx11_15 call_num: 124
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9112  API in function: draw_cubedx11_15 call_num: 125
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9180  API in function: draw_cubedx11_15 call_num: 126
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9132  API in function: draw_cubedx11_15 call_num: 128
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9132  API in function: draw_cubedx11_15 call_num: 129
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9092  API in function: draw_cubedx11_15 call_num: 130
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10476  API in function: draw_cubedx11_15 call_num: 131
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9128  API in function: draw_cubedx11_15 call_num: 132
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10416  API in function: draw_cubedx11_15 call_num: 133
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9092  API in function: draw_cubedx11_15 call_num: 134
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9608  API in function: draw_cubedx11_15 call_num: 135
+thread: 15032 Exit from callback function: draw_cubedx11_15 return to: ucrtbase!_initterm_e
+thread: 15032  Call to function: draw_cubedx11_32 call_num: 137
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+9136  API in function: draw_cubedx11_32 call_num: 192
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+9144  API in function: draw_cubedx11_32 call_num: 193
+thread: 15032    Exit from function: draw_cubedx11_32
+thread: 15032 Exit from callback function: draw_cubedx11_16 return to: ucrtbase!_initterm_e
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10428  API in function: draw_cubedx11_18 call_num: 143
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9700  API in function: draw_cubedx11_17 call_num: 138
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9092  API in function: draw_cubedx11_17 call_num: 139
+thread: 15032  Call to function: draw_cubedx11_27 call_num: 144
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10356  API in function: draw_cubedx11_27 call_num: 182
+thread: 15032    Exit from function: draw_cubedx11_27
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9192  API in function: draw_cubedx11_18 call_num: 145
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+9200  API in function: draw_cubedx11_18 call_num: 148
+thread: 15032  Call to function: draw_cubedx11_34 call_num: 151
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10386  API in function: draw_cubedx11_34 call_num: 205
+thread: 15032    Call to:  kernel32!GetStartupInfoWStub  API in function: draw_cubedx11_34 call_num: 206
+thread: 15032    Exit from function: draw_cubedx11_34
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10422  API in function: draw_cubedx11_18 call_num: 152
+thread: 15032  Call to function: draw_cubedx11_3 call_num: 153
+thread: 15032    Call to:  user32!LoadIconW  API in function: draw_cubedx11_3 call_num: 21
+thread: 15032    Call to:  user32!LoadCursorW  API in function: draw_cubedx11_3 call_num: 22
+thread: 15032    Call to:  user32!LoadIconW  API in function: draw_cubedx11_3 call_num: 23
+thread: 15032    Call to:  user32!RegisterClassExW  API in function: draw_cubedx11_3 call_num: 24
+thread: 15032    Call to:  user32!AdjustWindowRectEx  API in function: draw_cubedx11_4 call_num: 27
+thread: 15032    Call to:  user32!CreateWindowExW  API in function: draw_cubedx11_4 call_num: 28
+winmm pdbs\winmm.pdb 140711684014080
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  d3d11!D3D11CreateDevice  API in function: draw_cubedx11_5 call_num: 31
+thread: 15032    Call to:  d3d11!CLayeredObject<class CDevice>::CContainedObject::QueryInterface`adjustor{16}'   API in function:
+draw_cubedx11_6 call_num: 34
+thread: 15032    Call to:  d3d11!CLayeredObject<class CDevice>::CContainedObject::Release`adjustor{16}'   API in function: draw_cu
+bedx11_6 call_num: 35
+thread: 15032    Call to:  d3d11!CContext::ID3D11DeviceContext5_QueryInterface_Thk  API in function: draw_cubedx11_6 call_num: 36
+thread: 15032    Call to:  d3d11!CContext::ID3D11DeviceContext5_Release_Thk  API in function: draw_cubedx11_6 call_num: 37
+thread: 15032    Call to:  d3d11!CLayeredObject<class CDevice>::CContainedObject::QueryInterface`adjustor{16}'   API in function:
+draw_cubedx11_6 call_num: 38
+thread: 15032    Call to:  d3d11!NDXGI::CDevice::GetAdapter  API in function: draw_cubedx11_6 call_num: 39
+thread: 15032    Call to:  d3d11!CLayeredObject<class NDXGIOn12::CDevice>::CContainedObject::Release  API in function: draw_cubedx
+11_6 call_num: 40
+thread: 15032    Call to:  dxgi!CDXGIBaseAdapter::GetDesc  API in function: draw_cubedx11_6 call_num: 41
+thread: 15032    Call to:  kernel32!OutputDebugStringAStub  API in function: draw_cubedx11_6 call_num: 42
+thread: 15032    Call to:  kernel32!OutputDebugStringWStub  API in function: draw_cubedx11_6 call_num: 43
+thread: 15032    Call to:  dxgi!CDXGIBaseAdapter::GetParent  API in function: draw_cubedx11_6 call_num: 44
+thread: 15032    Call to:  dxgi!ATL::CComObject<class CDXGIAdapter>::Release  API in function: draw_cubedx11_6 call_num: 45
+thread: 15032    Call to:  dxgi!CDXGIFactory::CreateSwapChainForHwnd  API in function: draw_cubedx11_6 call_num: 46
+thread: 15032    Call to:  dxgi!ATL::CComObject<class CDXGIFactory>::Release  API in function: draw_cubedx11_6 call_num: 47
+thread: 15032    Call to:  dxgi!CDXGISwapChain::GetBuffer  API in function: draw_cubedx11_6 call_num: 48
+thread: 15032    Call to:  d3d11!CDevice::CreateRenderTargetView  API in function: draw_cubedx11_6 call_num: 49
+thread: 15032    Call to:  d3d11!CTexture2D::GetDesc  API in function: draw_cubedx11_6 call_num: 50
+thread: 15032    Call to:  d3d11!CLayeredObjectWithCLS<class CAuthenticatedChannel>::CContainedObject::Release  API in function: d
+raw_cubedx11_6 call_num: 51
+thread: 15032    Call to:  d3d11!CDevice::CreateTexture2D  API in function: draw_cubedx11_6 call_num: 52
+thread: 15032    Call to:  d3d11!CDevice::CreateDepthStencilView  API in function: draw_cubedx11_6 call_num: 53
+thread: 15032    Call to:  d3d11!CLayeredObjectWithCLS<class CAuthenticatedChannel>::CContainedObject::Release  API in function: d
+raw_cubedx11_6 call_num: 54
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+988544  API in function: draw_cubedx11_6 call_num: 55
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+979744  API in function: draw_cubedx11_7 call_num: 59
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+93424  API in function: draw_cubedx11_7 call_num: 60
+thread: 15032    Call to:  d3d11!CDevice::CreateVertexShader  API in function: draw_cubedx11_7 call_num: 61
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+988544  API in function: draw_cubedx11_7 call_num: 62
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+979744  API in function: draw_cubedx11_8 call_num: 66
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+93424  API in function: draw_cubedx11_8 call_num: 67
+thread: 15032    Call to:  d3d11!CDevice::CreatePixelShader  API in function: draw_cubedx11_8 call_num: 68
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+979680  API in function: draw_cubedx11_8 call_num: 69
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+979744  API in function: draw_cubedx11_8 call_num: 70
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+93424  API in function: draw_cubedx11_8 call_num: 71
+thread: 15032    Call to:  d3d11!CDevice::CreateInputLayout  API in function: draw_cubedx11_8 call_num: 72
+thread: 15032    Call to:  d3dcompiler_47_6344C24A+979680  API in function: draw_cubedx11_8 call_num: 73
+thread: 15032    Call to:  d3d11!CDevice::CreateBuffer  API in function: draw_cubedx11_8 call_num: 74
+thread: 15032    Call to:  d3d11!CDevice::CreateBuffer  API in function: draw_cubedx11_8 call_num: 75
+thread: 15032    Call to:  d3d11!CDevice::CreateBuffer  API in function: draw_cubedx11_8 call_num: 76
+thread: 15032    Call to:  d3d11!CDevice::CreateRasterizerState  API in function: draw_cubedx11_8 call_num: 77
+thread: 15032    Call to:  d3d11!CDevice::CreateDepthStencilState  API in function: draw_cubedx11_8 call_num: 78
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 79
+thread: 15032    Call to:  kernel32!QueryPerformanceFrequencyStub  API in function: draw_cubedx11_8 call_num: 80
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_8 call_num: 87
+thread: 15032    Call to:  d3d11!CLayeredObjectWithCLS<class CAuthenticatedChannel>::CContainedObject::Release  API in function: d
+raw_cubedx11_8 call_num: 88
+thread: 15032    Call to:  d3d11!CLayeredObjectWithCLS<class CAuthenticatedChannel>::CContainedObject::Release  API in function: d
+raw_cubedx11_8 call_num: 89
+thread: 15032    Call to:  dxgi!CDXGISwapChain::ResizeBuffers  API in function: draw_cubedx11_8 call_num: 90
+thread: 15032    Call to:  dxgi!CDXGISwapChain::GetBuffer  API in function: draw_cubedx11_8 call_num: 91
+thread: 15032    Call to:  d3d11!CDevice::CreateRenderTargetView  API in function: draw_cubedx11_8 call_num: 92
+thread: 15032    Call to:  d3d11!CTexture2D::GetDesc  API in function: draw_cubedx11_8 call_num: 93
+thread: 15032    Call to:  d3d11!CLayeredObjectWithCLS<class CAuthenticatedChannel>::CContainedObject::Release  API in function: d
+raw_cubedx11_8 call_num: 94
+thread: 15032    Call to:  d3d11!CDevice::CreateTexture2D  API in function: draw_cubedx11_8 call_num: 95
+thread: 15032    Call to:  d3d11!CDevice::CreateDepthStencilView  API in function: draw_cubedx11_8 call_num: 96
+thread: 15032    Call to:  d3d11!CLayeredObjectWithCLS<class CAuthenticatedChannel>::CContainedObject::Release  API in function: d
+raw_cubedx11_8 call_num: 97
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10661  API in function: draw_cubedx11_8 call_num: 98
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+error: Microsoft Visual C++ exception 1080890248 140711975499417
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in fnction: draw_cubedx11_2 call_num: 15
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032   Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to:  kernel32!QueryPerformanceCounterStub  API in function: draw_cubedx11_8 call_num: 81
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 82
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback functin: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PostQuitMessage  API in function: draw_cubedx11_1 call_num: 2
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  ntdll!NtdllDefWindowProc_W  API in function: draw_cubedx11_1 call_num: 0
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032 Exit from callback function: draw_cubedx11_1 return to: user32!UserCallWinProcCheckWow
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!TranslateMessage  API in function: draw_cubedx11_8 call_num: 83
+thread: 15032    Call to:  user32!DispatchMessageW  API in function: draw_cubedx11_8 call_num: 84
+thread: 15032    Call to:  user32!PeekMessageW  API in function: draw_cubedx11_8 call_num: 85
+thread: 15032    Call to:  user32!GetClientRect  API in function: draw_cubedx11_8 call_num: 86
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 100
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 101
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 102
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 103
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 104
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 105
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 106
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 107
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10649  API in function: draw_cubedx11_8 call_num: 108
+thread: 15032    Call to:  draw_cubedx11_4E1D7BE2+10643  API in function: draw_cubedx11_8 call_num: 109
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 110
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 111
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_0 call_num: 112
+thread: 15032      Exit from function: draw_cubedx11_0
+thread: 15032    Call to function: draw_cubedx11_2 call_num: 113
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Map  API in function: draw_cubedx11_2 call_num: 3
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_Unmap  API in function: draw_cubedx11_2 call_num: 4
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearRenderTargetView  API in function: draw_cubedx11_2 call_num
+: 5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_ClearDepthStencilView  API in function: draw_cubedx11_2 call_num
+: 6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetViewports  API in function: draw_cubedx11_2 call_num: 7
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_RSSetState  API in function: draw_cubedx11_2 call_num: 8
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetDepthStencilState  API in function: draw_cubedx11_2 call_nu
+m: 9
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_OMSetRenderTargets  API in function: draw_cubedx11_2 call_num: 1
+0
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetPrimitiveTopology  API in function: draw_cubedx11_2 call_nu
+m: 11
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetInputLayout  API in function: draw_cubedx11_2 call_num: 12
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 13
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetShader  API in function: draw_cubedx11_2 call_num: 14
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_SetConstantBuffers  API in function: draw_cubedx11_2 call_num: 1
+5
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetVertexBuffers  API in function: draw_cubedx11_2 call_num: 1
+6
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_IASetIndexBuffer  API in function: draw_cubedx11_2 call_num: 17
+thread: 15032      Call to:  d3d11!CContext::TID3D11DeviceContext_DrawIndexed  API in function: draw_cubedx11_2 call_num: 18
+thread: 15032      Call to:  dxgi!CDXGISwapChain::Present  API in function: draw_cubedx11_2 call_num: 19
+thread: 15032      Call to function: draw_cubedx11_14 call_num: 20
+thread: 15032        Exit from function: draw_cubedx11_14
+thread: 15032      Exit from function: draw_cubedx11_2
+thread: 15032    Call to function: draw_cubedx11_14 call_num: 114
+thread: 15032      Exit from function: draw_cubedx11_14
+thread: 15032    Exit from function: draw_cubedx11_13
+thread: 15032  Call to function: draw_cubedx11_35 call_num: 154
+thread: 15032    Call to:  kernel32!GetModuleHandleWStub  API in function: draw_cubedx11_35 call_num: 207
+thread: 15032    Exit from function: draw_cubedx11_35
+thread: 15032  Call to:  draw_cubedx11_4E1D7BE2+10440  API in function: draw_cubedx11_18 call_num: 161
+thread: 15032 Exit from callback function: draw_cubedx11_38 return to: ucrtbase!_execute_onexit_table
