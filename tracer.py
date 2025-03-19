@@ -228,8 +228,7 @@ def my_event_handler( event ):
                 disasembled_functions.append(instructions)
                 save_cache = True
 
-            insert_break_at_call(event, pid, instructions, partial(function_goto_break_point, function_id), partial(function_ret_b
-reak_point, function_id))
+            insert_break_at_call(event, pid, instructions, function_id, function_goto_break_point, function_ret_break_point)
 
             pdata_ordinal += 1
 
@@ -272,8 +271,10 @@ def callback_joiner(callbacks, event):
 calls = []
 known_return_addresses = []
 #inserts a ret at all ret instructions in the list
-def insert_break_at_call(event, pid, instructions, call_callback, ret_callback):
+def insert_break_at_call(event, pid, instructions, function_id, call_callback, ret_callback):
     add_next_inscruction_as_return = False
+    rets = 0
+    r_callback = partial(ret_callback, function_id)
     for instruction in instructions:
         instruction_name = instruction[2].split(" ")[0]
         if add_next_inscruction_as_return:
@@ -282,11 +283,13 @@ def insert_break_at_call(event, pid, instructions, call_callback, ret_callback):
             add_next_inscruction_as_return = True
             calls.append(instruction[0])
             call_num = len(calls)-1
-            c_callback = partial(call_callback, instruction, call_num)
+            c_callback = partial(call_callback, function_id, instruction, call_num)
             event.debug.break_at(pid, instruction[0], c_callback)
         elif 'ret' == instruction_name:
-            event.debug.break_at(pid, instruction[0], ret_callback)
-
+            event.debug.break_at(pid, instruction[0], r_callback)
+            rets += 1
+    if rets == 0:
+        print("function:", function_id, "has no returns")
 depth = []
 def function_goto_break_point(inside_function_id, code, call_num,  event):
     #this gets called on breakpoints
@@ -327,23 +330,21 @@ def function_ret_break_point(inside_function_id, event):
 
     return_address = read_ptr(process, context['Rsp'])
 
+    # Here we let get_function_desc find the function name despite uss not having the exact right fuction start address
+
+
     if return_address not in known_return_addresses:
-        API_func_desc = get_function_desc(return_address)
-        print("thread:", tid, "Exit from callback function:", inside_function_id, "return to:", API_func_desc)
+        return_func_desc = get_function_desc(return_address)
+        print("thread:", tid, "Exit from callback function:", inside_function_id, "return to:", return_func_desc)
     else:
-        print("thread:", tid, " "*(2*len(depth)), "Exit from function:", inside_function_id )
+        return_function = find_pdata_function(return_address)
+        return_func_desc = get_function_desc(return_function)
+        print("thread:", tid, " "*(2*len(depth)), "Exit from function:", inside_function_id, "returning to:", return_func_desc)
 
         if len(depth) > 0:
             depth.pop()
         else:
             print("depth empty")
-
-    #if tid not in call_stack:
-    #    call_stack[tid] = []
-    #if len(call_stack[tid]) > 0:
-    #    call_stack[tid].pop()
-
-    #print("ret from: ", function_id, "in thread: ", tid,"at:", pc)
 
     return
 
