@@ -39,6 +39,8 @@ Th file [track_calls_using_debug_events.py](track_calls_using_debug_events.py) a
 Both of these implementations have issues with multithreaded code as the debugger will catch any thread and the code has not been written to take that in to account.
 
 
+We also have [trace_basic.py](trace_basic.py) trace_basic.py uses the Pdata to find and add breakpoints at the start och each function and then it disasembles each function and ads breakpoints at all ret(return) instrucitons.
+
 ### next step
 I have been thinking of new solution that does not capture the call trace as it happens.
 It works in reverse based on the assumption that the code you are interested in will run in a loop.
@@ -55,13 +57,25 @@ Basically you start by selecting a API call to a dll (direct X) for example.
 
 You may want to capture multiple of each break point as each function may be called from multiple locations.
 
+### Update
+Built the loop based tracer see [track_calls_backwards_from_dll.py](track_calls_backwards_from_dll.py)
+It works as good as it will work. The issue that makes it not work quite right is that the return address is not allways corect.
+Pressumably there are places where there are jumps to the begining of a function this makes it so that the top of the stack is not always a return address when the begining of a function hits. Or some function is purposly manipulating the stack.
+
+To solve this you would need to trace at the location of call rather than in the function beeing called.
+
+PS. None of these methods will capture call backs in a good way.
+
+If we are tracing at the call we could probably speed things upp by not using breakpoins but instead allter the call so that it goes to a location in the empty space infront of the function. That way we can track the function with a native funcion that is being called or jumped to from that place. DynamoRIO is starting to look quite nice at this point.
+
+
 
 ## Current work
 
 - [x] The symbol loader from winappdbg is extremely slow and very very bad it almost never finds the true function. Implemented a new symbol loader which loads .pdb files.
 - [x] Initially we looked at directX 9 due to its simplicity, we need to start looking at the reversing of dx11. Maybe we should build a text dx11 project.
 - [ ] We will want to be able to decode the arguments of the API functions we add breakpoints to so that we can differentiate different rendering passes for example. Need to figure out how to do that.
-- [ ] Implement the loop based debugger
+- [X] Implement the loop based debugger
 
 
 # Stereo injection
