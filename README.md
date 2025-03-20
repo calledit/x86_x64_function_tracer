@@ -32,6 +32,7 @@ Some improvments:
 - One thing that can be done that works 100% of the time is to single step the execution, but that is simply to slow. So is not an improvment.
 - There may be some ways that tracing the first instruction in a function could be helpfull to but this is not as easy as it might first seam. The pitfall is that you can jump to the begining of a function and there is no way to know if the last instruction was a call or jmp. You need to look at the stack and the stack pointer to try to figure stuff out. In some cases you might be able to use the stack to figure out what heppend.
 - Adding a memmory access hardwarebreakpoint on the stack pointer. This might be a good idea, but threding might be problematic..
+- If you are exiting from an external callback and the stackpointer is larger than it was on you last breakpoint then you know the callback was made from somewhere inside that last call. Mabye it is true that the call back was made from inside the last API i call regadless of the stackpointer. But mabye interupts could be a counter example but i dont know how they work on x64.
 
 ## Work so far
 
