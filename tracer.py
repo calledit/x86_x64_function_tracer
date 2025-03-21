@@ -231,8 +231,7 @@ def my_event_handler( event ):
                 disasembled_functions.append(instructions)
                 save_cache = True
 
-            insert_break_at_call(event, pid, instructions, function_id, function_goto_break_point, function_ret_break_point, funct
-ion_enter_break_point, function_exited_break_point)
+            insert_break_at_call(event, pid, instructions, function_id, function_goto_break_point, function_ret_break_point, function_enter_break_point, function_exited_break_point)
 
             pdata_ordinal += 1
 
@@ -281,7 +280,7 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
     rets = 0
     r_callback = partial(ret_callback, function_id)
     e_callback = partial(enter_callback, function_id)
-    re_callback = partial(exited_callback, function_id)
+    call_num = 0
     for instruction_num, instruction in enumerate(instructions):
         instruction_name = instruction[2].split(" ")[0]
         callback_to_add = []
@@ -291,14 +290,16 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
 
         if add_next_inscruction_as_return:
             known_return_addresses.append(instruction[0])
-            callback_to_add.append(re_callback)
+            callback_to_add.append(partial(exited_callback, function_id, call_num))
             add_next_inscruction_as_return = False
+            #print("return address", function_id, call_num, hex(instruction[0]))
 
         if 'call' == instruction_name:
             add_next_inscruction_as_return = True
             calls.append(instruction[0])
             call_num = len(calls)-1
             callback_to_add.append(partial(call_callback, function_id, instruction, call_num))
+            #print("call", function_id, call_num, hex(instruction[0]))
         elif 'ret' == instruction_name:
             callback_to_add.append(r_callback)
             rets += 1
@@ -324,9 +325,10 @@ class CallInfo:
     function_addres: int
     expected_stack_pointer_at_function_init: int = 0
     return_address: int = 0
+    is_external_API: bool = False
 
 call_stack_enter_exit = {}
-def function_exited_break_point(inside_function_id, event):
+def function_exited_break_point(inside_function_id, call_num, event):
     thread = event.get_thread()
     pc     = thread.get_pc()
     tid = event.get_tid()
@@ -335,23 +337,40 @@ def function_exited_break_point(inside_function_id, event):
 
     if tid not in call_stack:
         call_stack[tid] = [CallInfo(inside_function_id)]
-        call_stack_enter_exit[tid] = [[False, False]]
+        call_stack_enter_exit[tid] = [[False, False, call_num]]
         print("thread:", tid, "", "Inital function:", inside_function_id)
 
-    #If we are expecing a exit we pop of the stack
-    # The issue we are having is that A return inside a call back is beeing registerd as the return for the API Call
-    if len(call_stack_enter_exit[tid]) >= 2 and call_stack_enter_exit[tid][-2][1]:
-        print("thread:", tid, " "*(2*len(call_stack[tid])), "return to function:", inside_function_id)
+
+    #We clear any surpurflus entries in call_stack_enter_exit that can arrise when functions dont have ret's
+    count_to_pop = 0
+    for i, item in enumerate(reversed(call_stack_enter_exit[tid])):
+
+        if item[2] == call_num:
+            count_to_pop = i+1
+            break
+
+
+    #if count_to_pop != 0:
+    #    print("pop:", count_to_pop)
+
+    #FIXME something is vrong here call_stack_enter_exit is the wrong length due to jumps ee need to account for the jumps
+    #If we are expecing a exit breakpoint we pop of the stack oterwize we asume this breakpoint is a result of unrealated jumping to to return address
+    if len(call_stack_enter_exit[tid]) >= 2 and call_stack_enter_exit[tid][(-count_to_pop)-1][1]:
+        print("thread:", tid, " "*(2*len(call_stack[tid])), "return to function:", inside_function_id, "from call_num:", call_num)
         if len(call_stack[tid]) > 0:
             call_stack[tid].pop()
         else:
             print("depth empty")
-        call_stack_enter_exit[tid].pop()
+
+        for i in range(count_to_pop):
+            call_stack_enter_exit[tid].pop()
+
         call_stack_enter_exit[tid][-1][1] = False #No longer expecting function Exit
 
 
     else:#we are not expecing a return so this must be a internal jump that heppedn to jump to the return address
-        print("thread:", tid, " "*(2*len(call_stack[tid])), "Jump to return address in function:", inside_function_id)
+        print("thread:", tid, " "*(2*len(call_stack[tid])), "Jump to return address belonging to:", call_num, " in function:", inside_function_id)
+        #print(call_stack_enter_exit[tid])
         w=0
 
 
@@ -362,70 +381,71 @@ def function_enter_break_point(inside_function_id, event):
     tid = event.get_tid()
     process = event.get_process()
 
-
+    init_callstack = False
 
     if tid not in call_stack:
         call_stack[tid] = [CallInfo(inside_function_id, pc)]
-        call_stack_enter_exit[tid] = [[False, False]]
+        call_stack_enter_exit[tid] = [[False, False, None]]
+        init_callstack = True
         print("thread:", tid, "", "Inital function:", inside_function_id)
 
+    #Are we expecting a enter?
     if len(call_stack_enter_exit[tid]) >= 1 and call_stack_enter_exit[tid][-1][0]:
         #print("we entred a function:", inside_function_id)
         call_stack_enter_exit[tid][-1][0] = False
 
         #Add extra enter exit state Which gets removed on ret
-        call_stack_enter_exit[tid].append([False, False])#Not expecting Extry and not Exit in new fucntion
+        call_stack_enter_exit[tid].append([False, False, None])#Not expecting Extry and not Exit in new fucntion
+    else:
+        return #Not expecting a enter this is probably just a internal jump
 
     context = thread.get_context()
     stack_pointer = context['Rsp']
 
     stack_value_at_expected_stack_pointer = 0
     last_call_info = call_stack[tid][-1]
-    last_called_f, expected_stack_pointer_after_call, expected_stack_value_after_call = last_call_info.function_addres, last_call_
-info.expected_stack_pointer_at_function_init, last_call_info.return_address
+    last_called_f, expected_stack_pointer_after_call, expected_stack_value_after_call = last_call_info.function_addres, last_call_info.expected_stack_pointer_at_function_init, last_call_info.return_address
     if expected_stack_pointer_after_call != 0:
         stack_value_at_expected_stack_pointer = read_ptr(process, expected_stack_pointer_after_call)
 
     #print("e:", last_called_f, expected_stack_pointer_after_call, expected_stack_value_after_call)
     #print("a:", pc, stack_pointer, stack_value_at_expected_stack_pointer)
 
-    #this is not the function we called last meaning it is either a external API callback or a jump to the begining of the functio
-n
-    if pc != last_called_f or expected_stack_pointer_after_call != stack_pointer or stack_value_at_expected_stack_pointer != expec
-ted_stack_value_after_call:
-        #print("Jump or Call to function:", inside_function_id)
+    #this is not the function we called last; meaning it is either a external API callback or a jump to the begining of the function
+    if pc != last_called_f or expected_stack_pointer_after_call != stack_pointer or stack_value_at_expected_stack_pointer != expected_stack_value_after_call:
 
-        # One might assume that the stack pointer should be lower inscase we are inside a callback from the last API call but sinc
-e the API call might
-        # have used a diffrent stack. That is not a guarante. The only way to know if we are trully in the API call is to break at
- the return of the API call.
+        # One might assume that the stack pointer should be lower inscase we are inside a callback from the last API call but since the API call might
+        # have used a diffrent stack. That is not a guarante. The only way to know if we are trully in the API call is to break at the return of the API call.
 
 
         if stack_pointer != expected_stack_pointer_after_call:
             if stack_value_at_expected_stack_pointer == expected_stack_value_after_call:
 
-                # FIXME: only the first time the breakpoint is trigerd can it be a call back if it happens agian it is a jump from
- inside the function and honestly
-                # it is not even sure it is call to begin with. As The API call might jump to this address instead of calling.
-                # If we hit a ret latter We can verify if  if was a API call
-                #print("This might be inside the API call")
-                print("thread:", tid, " "*(2*len(call_stack[tid])), "Call(or jump) to function:", inside_function_id)
-                #call_stack[tid].append(inside_function_id)
+                # THINK OF:
+                #
+                # If the call stack was just initalized this comparision dont make sence since the CallInfo data is all zero
+                if not init_callstack:
+                    activation_type = None
+                    if not call_stack[tid][-1].is_external_API:#if this is comming from a function we have decomplied ww would know about the call so this must be a jump
+                        activation_type = 'Jump'
+
+                    if activation_type is None:
+                        activation_type = 'Jump or Call'
+                    print("thread:", tid, " "*(2*len(call_stack[tid])), str(activation_type)+" to function:", inside_function_id)
+                # We cant know if this was a call or a jump, we can use certain heristics. But we cant know for sure, right now. If we later get
+                # a ret then we know it was a call.
+                # the heristics we can use is. Look at the stack and assume it is a return address. If the instruction before was not a call this
+                # is a jump, if it was a call this may be a call.
 
             else:
                 w=0
-                print("this is NOT inside the API call")
-                #print("the API call has returned since our return address is gone from the stack. We might now in a call back tha
-t comes from a unknown source, the stack_value may be a return address to the API calle now if this was a call or this may be jump
- outside of the API call")
+                print("Something is wrong, the return address is gone from the stack")
         else:
             print("wierd jumping behaviors")
             if stack_value_at_expected_stack_pointer == expected_stack_value_after_call:
-                print("this should basicly never happen, it is if we call one function but that function simply jumps to this func
-tion")
+                print("this should basicly never happen, it is if we call one function but that function simply jumps to this function")
             else:
-                print("this should basicly never happen, it is if we call one function but that function does something to the sta
-ck then jumps to this function")
+                print("this should basicly never happen, it is if we call one function but that function does something to the stack then jumps to this function")
 
 
 depth = []
@@ -437,7 +457,7 @@ def function_goto_break_point(inside_function_id, code, call_num,  event):
 
     if tid not in call_stack:
         call_stack[tid] = [CallInfo(inside_function_id, pc)]
-        call_stack_enter_exit[tid] = [[False, False]]
+        call_stack_enter_exit[tid] = [[False, False, call_num]]
         thread_in_known_function[tid] = False
         print("thread:", tid, "", "Inital function:", inside_function_id)
 
@@ -445,8 +465,7 @@ def function_goto_break_point(inside_function_id, code, call_num,  event):
     #    last_known_function = call_stack[tid][-1]
     #
     #    if last_known_function != inside_function_id:
-    #        print("thread:", tid, " "*(2*(len(call_stack[tid])-1)), "switched function, from:", last_known_function, "to:", insid
-e_function_id)
+    #        print("thread:", tid, " "*(2*(len(call_stack[tid])-1)), "switched function, from:", last_known_function, "to:", inside_function_id)
     #        call_stack[tid][-1] = inside_function_id
 
     process = event.get_process()
@@ -464,18 +483,18 @@ e_function_id)
     if find_pdata_function(target_addr) is not None:
         to_fuction_id = get_function_id(target_addr)
         print("thread:", tid, " "*(2*len(call_stack[tid])), "Call to function:", to_fuction_id, "call_num:", call_num)
-
+        is_external_API = False
     else:
         API_func_desc = get_function_desc(target_addr)
-        print("thread:", tid, " "*(2*len(call_stack[tid])), "Call to: ", API_func_desc, " API in function:", inside_function_id, "
-call_num:", call_num)
+        print("thread:", tid, " "*(2*len(call_stack[tid])), "Call to: ", API_func_desc, " API in function:", inside_function_id, "call_num:", call_num)
         to_fuction_id = API_func_desc
+        is_external_API = True
 
     call_stack_enter_exit[tid][-1][1] = True #Expecting Exited event in this fuction
 
 
-    call_stack[tid].append(CallInfo(to_fuction_id, target_addr, expected_stack_pointer_after_call, return_address))
-    call_stack_enter_exit[tid].append([True, False])#expecting Extry and not Exit in new fucntion
+    call_stack[tid].append(CallInfo(to_fuction_id, target_addr, expected_stack_pointer_after_call, return_address, is_external_API))
+    call_stack_enter_exit[tid].append([True, False, call_num])#expecting Extry and not Exit in new fucntion
 
 
 
@@ -508,13 +527,11 @@ def function_ret_break_point(inside_function_id, event):
 
     if return_address not in known_return_addresses:
         return_func_desc = get_function_desc(return_address)
-        print("thread:", tid, " "*(2*len(call_stack[tid])), "Exit from callback function:", inside_function_id, "return to:", retu
-rn_func_desc)
+        print("thread:", tid, " "*(2*len(call_stack[tid])), "Exit from callback function:", inside_function_id, "return to:", return_func_desc)
 
         #If we actually did a callback we can verify here
         if len(call_stack[tid]) > 0:
-            if call_stack[tid][-1].id == inside_function_id: #We only exit a call if we registerd that we enterd it and we dont re
-gister all callback entries
+            if call_stack[tid][-1].id == inside_function_id: #We only exit a call if we registerd that we enterd it and we dont register all callback entries
                 u=1 #call_stack[tid].pop()
         else:
             print("depth empty")
@@ -522,8 +539,7 @@ gister all callback entries
     else:
         return_function = find_pdata_function(return_address)
         return_func_desc = get_function_desc(return_function)
-        print("thread:", tid, " "*(2*len(call_stack[tid])), "Exit from function:", inside_function_id, "returning to:", return_fun
-c_desc)
+        print("thread:", tid, " "*(2*len(call_stack[tid])), "Exit from function:", inside_function_id, "returning to:", return_func_desc)
 
         if len(call_stack[tid]) > 0:
             u=1 #call_stack[tid].pop()
@@ -746,8 +762,7 @@ def call_asm2addr(code, thread, process):
         #
         base_val = context[reg]
 
-        #Since Rip counts on each instruction we need to account for the length of the call instruction that we have not enterd ye
-at
+        #Since Rip counts on each instruction we need to account for the length of the call instruction that we have not enterd yeat
         if reg == 'Rip':
             base_val += code[1] #Add the length of the call instruciton
 
