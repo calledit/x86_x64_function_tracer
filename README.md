@@ -52,6 +52,33 @@ But this goes back to hte first point we cant know if a entry in to a function t
 - Adding a memmory access hardwarebreakpoint on access to the stack. This might be a good idea, but threding might be problematic.
 - If you are exiting from an external callback and the stackpointer is larger than it was on you last breakpoint then you know the callback was made from somewhere inside that last call. Mabye it is true that the call back was made from inside the last API i call regadless of the stackpointer. But mabye interupts could be a counter example but i dont know how they work on x64. This cant be done as there are many calls that use alternative stacks for callbacks.
 
+## Making it fast
+Instead of breakpoints we need to alter the opcodes and wrap functions and add jump to tables and stuff like that.
+
+For breakpoint type 1 and 2 this revolves around replacing call instructions with instructions that allow us to wrap the call instruction.
+calls that are 5 bytes or longer are easy to replace you simply switch them out for a jump to a place where you can do whatever you want then jump back.
+
+For calls that are 2 and 3 bytes long it gets tricker. The only jump you can fit in that is a short jump (which is 2 bytes long), a short jump only allows jumping forward or backwards 127 bytes.
+And 127 bytes is not enogh to jump to a place where there is free memmory.
+
+I see two posible solutions to this; both of them have issues.
+
+1. Use the area of the instructions just ahead of the call.
+   For example the instructions:
+   ```
+   48 8b 01        MOV        RAX,qword ptr [param_1->unused]
+   0e ff 10        CALL       qword ptr [RAX]
+   ```
+Gives you 6 usable bytes those instructions can be moved a new area and a jump can be inserted to that area.
+This requires that the instructions are not doing relative jumps or have recerences to RIP (lets call these replacable instructions).
+It also requires that no other code jumps direcly to the call. Cause after replacement that jump will end up in the midle of an instruction.
+
+2. The other way to solve this is to ove the call instruction to a new memory region where it can be wraped. Then to search the surunding area of the call for replacable instructions. Then we move those instructions to a new memmory region and insert jump to the new memmory region and second jump to where wraped call is the area of the replaced instrucitons. Finnaly we replace the orginal call and place a shortjump to the long call of the wraped call instruction. This has the same issue as the first one, that jumps to thes instructions will fail result in segfaults.
+
+The first one will proably work for most places.
+And using a breakpoint for the new places where we cant find a solution can work as a fallback.
+
+
 ## Work so far
 
 ### Branch tracing
