@@ -469,10 +469,10 @@ def function_goto_break_point(inside_function_id, code, call_num,  event):
     #        call_stack[tid][-1] = inside_function_id
 
     process = event.get_process()
-    target_addr = call_asm2addr(code, thread, process)
-
-
     context = thread.get_context()
+    target_addr = call_asm2addr(code, context, process)
+
+
     expected_stack_pointer_after_call = context['Rsp']-8#We expect the call to subtract 8 bytes (the length of a pointer) to Rsp
     return_address = pc + code[1] #We expect the call to store the next instruction as a return address
 
@@ -742,7 +742,7 @@ def mem_p(memoryMap):
 
 
 
-def call_asm2addr(code, thread, process):
+def call_asm2addr(code, context, process):
 
     asm = code[2]
     if '[' in asm:#if this is a unstatic call
@@ -759,8 +759,8 @@ def call_asm2addr(code, thread, process):
             if op == '-':
                 displacement = -displacement
 
-        context = thread.get_context()
-        #
+
+
         base_val = context[reg]
 
         #Since Rip counts on each instruction we need to account for the length of the call instruction that we have not enterd yeat
@@ -772,10 +772,17 @@ def call_asm2addr(code, thread, process):
 
     else:
         label = code[2].split(" ")[1]
-        try:
-            target_addr = process.resolve_label(label)
-        except Exception as e:
-                print(e, code[2], label)
+
+        reg = label.capitalize()
+
+        #If this is a direct call like "call rax"
+        if reg in context:
+            target_addr = context[reg]
+        else:
+            try:
+                target_addr = process.resolve_label(label)
+            except Exception as e:
+                print("resolve_label error",e, code[2], label)
 
     return target_addr
 
