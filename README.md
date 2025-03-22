@@ -47,6 +47,7 @@ Certain functions dont use their own ret instruction but jump to a external libr
 But this goes back to hte first point we cant know if a entry in to a function that is not directly preceded by a traced call is actually a call and if the stack pointer is thus pointing to a return address. It may be a jump that preceded the entry. If it is there is no return address then the stack pointer will be pointing to some random address that is not the function return address at all.
 
 
+
 ##### Some improvments
 - One thing that can be done that works 100% of the time is to single step the execution, but that is simply to slow. So is not an improvment.
 - Adding a memmory access hardwarebreakpoint on access to the stack. This might be a good idea, but threding might be problematic.
@@ -82,6 +83,8 @@ Tracing breakpoint type 3 will be similar to how the short version of call was d
 
 
 Tracing breakpoint type 4 can only be effeictly solved by wraping the entire call in a new call instruction. The issue with this is jumps IE .pdata fucnctions that are not functions. Not sure if this is a thing. Anyway tracing breakpoint type 4 is the least important type to trace. We might not even need to do it.
+
+If you have access to Intel Processor Trace(hardware based instruction logging) Finding where a ret came from or if fucntion was called or jumped to should be easy.
 
 ## Work so far
 
