@@ -327,6 +327,7 @@ class CallInfo:
     return_address: int = None
     is_external_API: bool = False
     call_num: int = None
+    has_jumped_to_id: str = None
 
 call_stack_enter_exit = {}
 def function_exited_break_point(inside_function_id, call_num, event):
@@ -398,6 +399,7 @@ def function_enter_break_point(inside_function_id, event):
         init_callstack = True
         print("thread:", tid, "", "Inital function:", inside_function_id)
 
+
     #Are we expecting a enter?
     if len(call_stack_enter_exit[tid]) >= 1 and call_stack_enter_exit[tid][-1][0]:
         #print("we entred a function:", inside_function_id)
@@ -405,8 +407,23 @@ def function_enter_break_point(inside_function_id, event):
 
         #Add extra enter exit state Which gets removed on ret
         call_stack_enter_exit[tid].append([False, False, None])#Not expecting Extry and not Exit in new fucntion
+    #el
+    elif not init_callstack:
+
+        curent_known_func_id = call_stack[tid][-1].id
+        if call_stack[tid][-1].has_jumped_to_id is not None:
+            curent_known_func_id = call_stack[tid][-1].has_jumped_to_id
+
+        if curent_known_func_id != inside_function_id:
+            print("thread:", tid, " "*(2*len(call_stack[tid])), "Jump to function:", inside_function_id)
+            call_stack[tid][-1].has_jumped_to_id = inside_function_id
+        else:
+            #Not expecting a enter this is probably just a internal jump
+            #print("Not expecting a enter this is probably just a internal jump.", inside_function_id, call_stack)
+            w=0
+        return
     else:
-        return #Not expecting a enter this is probably just a internal jump
+        return #Not expecting a enter this is probably just the executable initiation
 
     context = thread.get_context()
     stack_pointer = context['Rsp']
@@ -510,7 +527,7 @@ def function_goto_break_point(inside_function_id, code, call_num,  event):
 
     if find_pdata_function(target_addr) is not None:
         to_fuction_id = get_function_id(target_addr)
-        print("thread:", tid, " "*(2*len(call_stack[tid])), "Call to function:", to_fuction_id, "call_num:", call_num)
+        print("thread:", tid, " "*(2*len(call_stack[tid])), "Call to function:", to_fuction_id, "call_num:", call_num, "in function:", inside_function_id)
         is_external_API = False
     else:
         API_func_desc = get_function_desc(target_addr)
@@ -859,4 +876,4 @@ def simple_debugger( argv ):
 # and the remaining arguments are passed to the newly created process.
 if __name__ == "__main__":
     import sys
-    simple_debugger( sys.argv[1:] )
+    simple_debugger sys.argv[1:] )
