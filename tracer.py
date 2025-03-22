@@ -336,7 +336,7 @@ def function_exited_break_point(inside_function_id, call_num, event):
 
 
     if tid not in call_stack:
-        call_stack[tid] = [CallInfo(inside_function_id)]
+        call_stack[tid] = [CallInfo(inside_function_id, pc)]
         call_stack_enter_exit[tid] = [[False, False, call_num]]
         print("thread:", tid, "", "Inital function:", inside_function_id)
 
@@ -552,7 +552,8 @@ def function_ret_break_point(inside_function_id, event):
 
 
     #print("remove the extra enter exit state that was added on entry:", inside_function_id)
-    call_stack_enter_exit[tid].pop()
+    if len(call_stack_enter_exit[tid]) > 1:
+        call_stack_enter_exit[tid].pop()
     #We now expect entry agin if there was a second callback
     call_stack_enter_exit[tid][-1][0] = True
 
