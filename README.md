@@ -78,6 +78,10 @@ It also requires that no other code jumps direcly to the call. Cause after repla
 The first one will proably work for most places.
 And using a breakpoint for the new places where we cant find a solution can work as a fallback.
 
+Tracing breakpoint type 3 will be similar to how the short version of call was done you will take a number of instrucitons move them and pray that ther are no jumps in to the instuctions. If you cant move the instructions you will have to rely on breakpoints.
+
+
+Tracing breakpoint type 4 can only be effeictly solved by wraping the entire call in a new call instruction. The issue with this is jumps IE .pdata fucnctions that are not functions. Not sure if this is a thing. Anyway tracing breakpoint type 4 is the least important type to trace. We might not even need to do it.
 
 ## Work so far
 
