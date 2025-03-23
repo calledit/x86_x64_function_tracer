@@ -89,13 +89,16 @@ If you have access to Intel Processor Trace(hardware based instruction logging) 
 Next up is recreating the tracer in C and importing those C functions as A DLL.
 
 We will need 4 exported C functions:
-function_enter_break_point(inside_function_id)
-function_exited_break_point(inside_function_id, call_num)
-function_ret_break_point(inside_function_id)
-function_goto_break_point(inside_function_id, code, call_num)
-We can probably decompose code before we get to c. Mabye decompose in to something like (bool)is_pointer (int)offset (int)registervalue. Or do the full decomposition in asembly and have a (int)target_function argumnet.
+* function_enter_break_point(inside_function_id)
+* function_exited_break_point(inside_function_id, call_num)
+* function_ret_break_point(inside_function_id)
+* function_goto_break_point(inside_function_id, code, call_num)
+  
+We can probably decompose code in function_goto_break_point before we get to c. Mabye decompose in to something like (bool)is_pointer (int)offset (int)registervalue. Or do the full decomposition in asembly and have a (int)target_function argumnet.
 
-We will also need to export something like export_stack_trace() and reset_stack_trace()
+We will also need to export something like
+* export_stack_trace()
+* reset_stack_trace()
 
 ## Work so far
 
