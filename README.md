@@ -25,6 +25,9 @@ I have been unable to get callgrind to work partly due to how modern games tend 
 
 I would like to be able to attach after the process has spawned either by replacing a dll or simply by attaching a debugger to the process id.
 
+## recompling_tracer.py
+Does what trace.py but tries to be faster by not using breakpoints. Currelty work in progress.
+
 ## trace.py
 trace.py traces all calls and rets in a function. Earlier versions tried to use shortcuts but they all had various issues. The point of trace.py is to as good as you are going to get a call tracer when it comes to accuracy. Speed is important but it suposed to be refernce for accuracy.
 
