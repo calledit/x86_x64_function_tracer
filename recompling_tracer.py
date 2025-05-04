@@ -200,6 +200,16 @@ def add_jump_table_entry(instruction_address, instructions, process):
 
         call_relocate = False
 
+        if "rip +" in instruction_asm or "rip -" in instruction_asm:
+            print("Acounting for alterd rip", instruction_asm)
+            diff = new_instruction_address - instruction[0]
+            rip_address = f"rip - 0x{(diff & 0xffffffff):x}"
+            instruction_asm = instruction_asm.replace("rip", rip_address)
+        elif "rip" in instruction_asm:
+            print("If something saves or does something with rip directly we cant move the instruction")
+            return False, break_point_entry
+
+
         if instruction_parts[0] in ("call", "jmp"):
 
             #Recomplie jmps and calls
@@ -213,11 +223,18 @@ def add_jump_table_entry(instruction_address, instructions, process):
                 #print("before:", instruction_asm)
                 #instruction_asm = instruction_parts[0]+" "+f"0x{(original_jump):x}"
             else:
-                print("call may be relative and it may not, it depends on the type")
-                return False, break_point_entry
-        elif "rip" in instruction_asm or is_jump:
-            print("This will fail replaced instructions are doing realative stuff", instruction_asm)
+                print ("dynamic call/jmp")
+                if instruction_parts[0] == 'call':
+                    call_relocate = True
+                #print("call may be relative and it may not, it depends on the type", instruction_asm)
+                #return False, break_point_entry
+        elif is_jump:
+            print("strange jumping will fail", instruction_asm)
             return False, break_point_entry
+        elif instruction_parts[0] in ("cmp"):
+            print("non movable instruction", instruction_asm)
+            return False, break_point_entry
+
 
         #asmembly.append(instruction_asm) #disable this untill you manage to remove the labels from the disasembly
         print("asm:", instruction_asm)
@@ -564,7 +581,7 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
                     asmm = f"jmp 0x{jump_to_address:x}"+(";nop"*extra_bytes)
             else:
                 asmm = None
-                print("cant fit 5 byte jump")
+                print("cant fit 5 byte jump", instruction[2], "len:", instruction_len)
                 if is_known_jump_to_adress: # we can never guarante that there wont be a jump...
                     print("we can not use the prevoius bytes as there is a jump to this address")
                 needed_bytes = 5 - instruction_len
@@ -797,7 +814,7 @@ def function_goto_break_point(inside_function_id, instruction_address, code, cal
     #
     #    if last_known_function != inside_function_id:
     #        print("thread:", tid, " "*(2*(len(call_stack[tid])-1)), "switched function, from:", last_known_function, "to:", inside_function_id)
-    #        call_stack[tid][-1] = inside_function_id
+    #        call_stack[tid][-1] = insid_function_id
 
     process = event.get_process()
     context = thread.get_context()
@@ -813,7 +830,7 @@ def function_goto_break_point(inside_function_id, instruction_address, code, cal
 
     if find_pdata_function(target_addr) is not None:
         to_fuction_id = get_function_id(target_addr)
-        print("thread:", tid, " "*(2*len(call_stack[tid])), "Call to function:", to_fuction_id, call_num:", call_num, "in function:", inside_function_id)
+        print("thread:", tid, " "*(2*len(call_stack[tid])), "Call to function:", to_fuction_id, "call_num:", call_num, "in function:", inside_function_id)
         is_external_API = False
     else:
         API_func_desc = get_function_desc(target_addr)
