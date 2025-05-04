@@ -876,4 +876,4 @@ def simple_debugger( argv ):
 # and the remaining arguments are passed to the newly created process.
 if __name__ == "__main__":
     import sys
-    simple_debugger sys.argv[1:] )
+    simple_debugger(sys.argv[1:])
