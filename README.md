@@ -28,10 +28,38 @@ I would like to be able to attach after the process has spawned either by replac
 ## recompling_tracer.py
 Does what trace.py but tries to be faster by not using breakpoints. Currelty work in progress.
 Using recopilation it can:
-Capture most calls, as most calls are 5 bytes or longer (BUT NOT ALL), and if you can capture the call you can capture the exit breakpoint ie. type 1 & 2. Type 3 can be captured sometimes. and type 4 cant be captured using recompilation. As the ret instruction is only 1 byte long. I am thinking of using something like MinHook to capture type 3 & 4 as it is more stable than anything i will be able to build in a short while, but i am not sure about what implications using MinHook might have to the rest of the code yeat.
+Capture most calls, as most calls are 5 bytes or longer (BUT NOT ALL), and if you can capture the call you can capture the exit breakpoint ie. type 1 & 2. Type 3 can be captured sometimes. and type 4 cant be captured using recompilation. As the ret instruction is only 1 byte long....
+
+I am thinking of using something like MinHook to capture type 3 & 4 as it is more stable than anything i will be able to build in a short while, but i am not sure about what implications using MinHook might have to the rest of the code yeat.
 If you only use minhook you run in to issues with librarys calling themselfs. Which we are not intressted in; but that should be able to be filterd out.
 You would first set break points on all calls. Then as the call is trigered you would register to where it was going then hook that function. After the function was hooked you would remove the breakpoint. As long as each call always calls the same function this would work great. My guess is that each call calls the same function 99.999999999% of the time, BUT SOMETIMES IT WONT. We could just set breakpoints on the ones that potentially could have this issue.
 I belive it will have issues with tail call optimiations.
+I found the solution to tracking tail call optimatations. You simply wrap each call in a second call.
+```
+
+MH_CreateHook(LPVOID pTarget, LPVOID pDetour, LPVOID *ppOriginal);
+pTarget is the address of the function we want to track.
+pDetour is the address to the place where the jump table function is.
+ppOriginal is a address to a function setup by MinHook, a function that "goes to" the original function.
+
+pDetour would look somehting like:
+
+int 3 # to track function enter, By checking the stack pointer and stack pointer value we might even be able to figure out if this is a tail call optimized call.
+call ppOriginal
+int 3 # to track function return
+ret
+
+This allows one to track the entry and return of each call. But it does make tail call optimizations less effective. So some programs that use recursion ALLOT might break.
+```
+They way this would be used would be:
+1. Find all function in the .ptable
+2. Find all calls in each function. Replace them with jumps if longer than 5 bytes. Otherwise replace with int 3 otherwise.
+3. Setup code that moves the instruction pointer to the jump table as the int 3 is reached. That is the int 3 will work like a (very slow) jump.
+4. Hook all the functions.
+
+The slow jump sucks but it will work. It will need to occur as the instruction call rax or call [rax+8] is 2 and 3 bytes long. In many cases you can probably find places around the call that can be replaced.
+If the int 3 is moved by MinHook that strategy will fail.
+
 
 ## trace.py
 trace.py traces all calls and rets in a function. Earlier versions tried to use shortcuts but they all had various issues. The point of trace.py is to as good as you are going to get a call tracer when it comes to accuracy. Speed is important but it suposed to be refernce for accuracy.
