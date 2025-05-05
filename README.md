@@ -27,6 +27,11 @@ I would like to be able to attach after the process has spawned either by replac
 
 ## recompling_tracer.py
 Does what trace.py but tries to be faster by not using breakpoints. Currelty work in progress.
+Using recopilation it can:
+Capture most calls, as most calls are 5 bytes or longer (BUT NOT ALL), and if you can capture the call you can capture the exit breakpoint ie. type 1 & 2. Type 3 can be captured sometimes. and type 4 cant be captured using recompilation. As the ret instruction is only 1 byte long. I am thinking of using something like MinHook to capture type 3 & 4 as it is more stable than anything i will be able to build in a short while, but i am not sure about what implications using MinHook might have to the rest of the code yeat.
+If you only use minhook you run in to issues with librarys calling themselfs. Which we are not intressted in; but that should be able to be filterd out.
+You would first set break points on all calls. Then as the call is trigered you would register to where it was going then hook that function. After the function was hooked you would remove the breakpoint. As long as each call always calls the same function this would work great. My guess is that each call calls the same function 99.999999999% of the time, BUT SOMETIMES IT WONT. We could just set breakpoints on the ones that potentially could have this issue.
+I belive it will have issues with tail call optimiations.
 
 ## trace.py
 trace.py traces all calls and rets in a function. Earlier versions tried to use shortcuts but they all had various issues. The point of trace.py is to as good as you are going to get a call tracer when it comes to accuracy. Speed is important but it suposed to be refernce for accuracy.
