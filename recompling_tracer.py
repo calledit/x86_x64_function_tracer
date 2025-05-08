@@ -126,6 +126,84 @@ def asm(CODE, address = 0):
     encoding, count = ks.asm(CODE, address)
     return bytes(encoding)
 
+def run_func_hook_in_process(h_process, process, func_addr, pTarget, pDetour):
+    """
+    Calls func_hook(pTarget, pDetour, &original) in the remote process at `func_addr`,
+    and returns the value written into `original`.
+
+    - h_process: HANDLE to the target process
+    - process:  object with .read(addr, size) and .write(addr, bytes) methods
+    - func_addr: absolute address of your func_hook in the remote process
+    - pTarget, pDetour: LPVOIDs in the remote process
+    """
+    ptr_size = ctypes.sizeof(ctypes.c_void_p)
+
+    # 1) Build the x64 stub (must be executable)
+    #    stub(rcx)-> rax=rcx; rcx=[rax]; rdx=[rax+8]; r8=[rax+16]; mov rax,func; call rax; ret
+    stub = bytearray()
+    stub += b'\x48\x89\xc8'                         # mov rax, rcx
+    stub += b'\x48\x8b\x08'                         # mov rcx, [rax]
+    stub += b'\x48\x8b\x50\x08'                     # mov rdx, [rax+8]
+    stub += b'\x4d\x8b\x40\x10'                     # mov r8,  [rax+16]
+    stub += b'\x48\xb8' + ctypes.c_uint64(func_addr).value.to_bytes(8, 'little')
+    stub += b'\xff\xd0'                             # call rax
+    stub += b'\xc3'                                 # ret
+    stub_size = len(stub)
+
+    # 2) Compute total size: stub + 4 pointers (pTarget, pDetour, ppOriginal_ptr, original_storage)
+    data_size = ptr_size * 4
+    total_size = stub_size + data_size
+
+    # 3) Allocate one block for both code+data
+    ctypes.windll.kernel32.VirtualAllocEx.restype = wintypes.LPVOID
+    remote_block = ctypes.windll.kernel32.VirtualAllocEx(
+        h_process, None, total_size,
+        0x3000,
+        0x40
+    )
+    if not remote_block:
+        raise ctypes.WinError()
+
+    # 4) Write stub at start of block
+    process.write(remote_block, bytes(stub))
+
+    # 5) Prepare the data area:
+    #    offset = remote_block + stub_size
+    data_base = remote_block + stub_size
+    #    slot0 = pTarget
+    #    slot1 = pDetour
+    #    slot2 = pointer to slot3  (i.e. data_base + 3*ptr_size)
+    #    slot3 = 0 (where hook will write original)
+    slot3_addr = data_base + 3 * ptr_size
+    buf = (
+        ctypes.c_uint64(pTarget).value.to_bytes(ptr_size, 'little') +
+        ctypes.c_uint64(pDetour).value.to_bytes(ptr_size, 'little') +
+        ctypes.c_uint64(slot3_addr).value.to_bytes(ptr_size, 'little') +
+        (0).to_bytes(ptr_size, 'little')
+    )
+    process.write(data_base, buf)
+
+    # 6) Launch the stub—passing `data_base` as the single LPVOID
+    thread_id = ctypes.c_ulong(0)
+    h_thread = ctypes.windll.kernel32.CreateRemoteThread(
+        h_process, None, 0,
+        ctypes.c_void_p(remote_block),      # stub entrypoint
+        ctypes.c_void_p(data_base),         # rcx for stub
+        0,
+        ctypes.byref(thread_id)
+    )
+    if not h_thread:
+        raise ctypes.WinError()
+
+    # 7) Wait for it to finish ####XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX will fail as the process i paused due to the debugger
+    ctypes.windll.kernel32.WaitForSingleObject(h_thread, 0xFFFFFFFF)
+    ctypes.windll.kernel32.CloseHandle(h_thread)
+
+    # 8) Read back the original-pointer value from slot3
+    data = process.read(slot3_addr, ptr_size)
+    original = int.from_bytes(data, 'little')
+    return original
+
 
 def run_loadlibrary_in_process(h_process, process, dll_path):
     # Open the target process with required access rights
@@ -174,8 +252,14 @@ def run_loadlibrary_in_process(h_process, process, dll_path):
 
     return True
 
+
+def go_jump_breakpoint(jump_to_adddress, callback, event):
+    event.get_thread().set_pc(jump_to_adddress)
+    callback(event)
+
+
 shell_code_address_ofset = 20 #We start at 20 for no particular reason, might be good to have free space...
-def add_jump_table_entry(instruction_address, instructions, process):
+def add_jump_table_entry(instruction_address_not_used, instructions, process, callback):
     global shell_code_address, shell_code_address_ofset
 
     asmembly = []
@@ -184,17 +268,52 @@ def add_jump_table_entry(instruction_address, instructions, process):
     jump_back_address = None
     new_instruction_address = jump_to_address
 
-    new_code = asm("int 3")
-    code.append(new_code)
-    new_instruction_address += len(new_code)
-    break_point_entry = new_instruction_address
+    break_point_entry = -1
+
 
     for instruction in instructions:
-        jump_back_address = instruction[0] + instruction[1]
+        instruction_address = instruction[0]
+        instruction_len = instruction[1]
+        jump_back_address = instruction_address + instruction_len
+
 
         instruction_asm = instruction[2]
         instruction_parts = instruction_asm.split(' ')
         instruction_raw_bytes = bytes.fromhex(instruction[3])
+
+
+        insert_len = 0
+        jump_type = 'none'
+        if instruction_len >= 5:
+            insert_len = 5
+            jump_type = 'normal'
+
+            #Add break point for tracking
+            new_code = asm("int 3")
+            code.append(new_code)
+            new_instruction_address += len(new_code)
+            break_point_entry = new_instruction_address
+
+        elif instruction_len >= 2 and instruction_parts[0] in ("call"):
+            insert_len = 2
+            jump_type = '2byte'
+        else:
+            insert_len = 1
+            jump_type = '1byte'
+
+        extra_bytes = max(instruction_len - insert_len, 0)
+        jmp_to_shellcode = None
+        asmm = False
+        if jump_type == 'normal':
+            asmm = f"jmp 0x{jump_to_address:x}"+(";nop"*extra_bytes)
+        elif jump_type == '2byte':
+            asmm = f"int 3"+(";nop"*extra_bytes)
+            break_point_entry = instruction_address + 2
+        elif jump_type == '1byte':
+            jmp_to_shellcode = b'\xCC'
+            break_point_entry = instruction_address + 1
+
+
 
         is_jump = instruction_asm.startswith('j')
 
@@ -235,9 +354,21 @@ def add_jump_table_entry(instruction_address, instructions, process):
             print("non movable instruction", instruction_asm)
             return False, break_point_entry
 
+        if asmm or jmp_to_shellcode:
+            if jmp_to_shellcode is None:
+                jmp_to_shellcode = asm(asmm, instruction_address)
+            print("write:", asmm, "len:", len(jmp_to_shellcode), "at:", instruction_address)
+            process.write(instruction_address, jmp_to_shellcode)
+            #We add a callback to the breakpoint. That was coded in to the jump table.
+            if jump_type == 'normal':
+                external_breakpoints[break_point_entry] = callback
+            else:
+                external_breakpoints[break_point_entry] = partial(go_jump_breakpoint, jump_to_address, callback)
+        else:
+            return False, break_point_entry
 
         #asmembly.append(instruction_asm) #disable this untill you manage to remove the labels from the disasembly
-        print("asm:", instruction_asm)
+        #print("asm:", instruction_asm)
         new_code = asm(instruction_asm, new_instruction_address)
 
         #print("raw:", instruction_raw_bytes, new_code)
@@ -246,6 +377,8 @@ def add_jump_table_entry(instruction_address, instructions, process):
 
         if call_relocate:
             call_relocations[jump_back_address] = new_instruction_address
+
+        break #only check first instruciton
 
 
     #displacement = jump_back_address - new_instruction_address
@@ -271,10 +404,13 @@ def add_jump_table_entry(instruction_address, instructions, process):
 
 
 
+
+
     return jump_to_address, break_point_entry
 
 hProcess = None
 external_breakpoints = {}
+jump_breakpoints = {}
 call_relocations = {}
 call_stack = {}
 last_function = {}
@@ -363,7 +499,10 @@ def my_event_handler( event ):
             print(basic_name, pdb_name, base_addr)
             pdb_names[basic_name] = base_addr
             if basic_name not in pdbs:
-                pdbs[basic_name] = Lookup([(pdb_name, 0)])
+                try:
+                    pdbs[basic_name] = Lookup([(pdb_name, 0)])
+                except Exception as e:
+                    print("failed to load pdb", pdb_name, e)
 
 
         #if basic_name == "breakpoint_dll":
@@ -375,6 +514,24 @@ def my_event_handler( event ):
             #        base_injection_addr = addr
 
 
+        #Capture the injected dll
+        if basic_name == "calltracer":
+            pe = pefile.PE("calltracer.dll")
+
+            if hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
+                for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
+                    if exp.name:
+                        name = exp.name.decode()
+                        rva = exp.address
+                        virtual_address = base_addr + rva
+                        print(f"{name} virtual_address: 0x{virtual_address:X}")
+                        #if name == "hook_function":
+                        #    process_handle = process.get_handle()
+                        #    run_func_hook_in_process(process_handle, process, virtual_address, base_addr, base_addr+50)
+                        #    process.close_handle()
+                    else:
+                        print("No export table found.")
+            #exit()
 
 
         if basic_name == "kernel32" and shell_code_address is None:
@@ -383,9 +540,8 @@ def my_event_handler( event ):
 
             process_handle = process.get_handle()
 
-            # We need to load the extra memmory as a dll so it get placed in close proximity to the original
-            # code so it can be jumped to breakpoint_dll does nothing expect fill out space
-            #run_loadlibrary_in_process(process_handle, process, "breakpoint_dll.dll")
+            # We inject a dll that has fast code for tracing as well as access to MinHook
+            run_loadlibrary_in_process(process_handle, process, "calltracer.dll")
 
             base_addr = modules[exe_basic_name]
             ctypes.windll.kernel32.VirtualAllocEx.argtypes = [
@@ -537,18 +693,22 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
         if instruction_num == 0:
             callback_to_add.append(partial(enter_callback, function_id, instruction_address))
             is_known_jump_to_adress = True
+            print("type: enter_callback")
 
         if add_next_inscruction_as_return:
+            print("type: exit_callback")
             known_return_addresses.append(instruction_address)
             callback_to_add.append(partial(exited_callback, function_id, instruction_address, call_num))
             add_next_inscruction_as_return = False
 
         if 'call' == instruction_name:
+            print("type: callback")
             add_next_inscruction_as_return = True
             calls.append(instruction_address)
             call_num = len(calls)-1
             callback_to_add.append(partial(call_callback, function_id, instruction_address, instruction, call_num))
         elif 'ret' == instruction_name:
+            print("type: return")
             callback_to_add.append(partial(ret_callback, function_id, instruction_address))
             rets += 1
 
@@ -573,39 +733,23 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
             extra_bytes = instruction_len - 5 #the jump is 5 bytes long
             asmm = None
             break_point_entry = None
-            if extra_bytes >= 0:
-                jump_to_address, break_point_entry = add_jump_table_entry(instruction_address, replace_instructions, process = process)
-                if not jump_to_address:
-                    print("could not create jump_table_entry")
-                else:
-                    asmm = f"jmp 0x{jump_to_address:x}"+(";nop"*extra_bytes)
-            else:
-                asmm = None
-                print("cant fit 5 byte jump", instruction[2], "len:", instruction_len)
-                if is_known_jump_to_adress: # we can never guarante that there wont be a jump...
-                    print("we can not use the prevoius bytes as there is a jump to this address")
-                needed_bytes = 5 - instruction_len
-                extra_instructions = 0
-                while needed_bytes > 0:
-                    extra_instruct_num = instruction_num + extra_instructions + 1
-                    if len(instructions) > extra_instruct_num:
-                        print("next instruction:", instructions[extra_instruct_num])
-                        needed_bytes -= instructions[extra_instruct_num][1]
-                    else:
-                        print("not enogh instructions traling")
-                        break
-                    extra_instructions += 1
 
-            if asmm is not None:
-                jmp_to_shellcode = asm(asmm, instruction_address)
-                print("write:", asmm, "len:", len(jmp_to_shellcode), "at:", instruction_address)
+            jump_to_address, break_point_entry = add_jump_table_entry(instruction_address, replace_instructions, process = process, callback = callback)
+            if not jump_to_address:
+                print("could not create jump_table_entry")
+                event.debug.break_at(pid, instruction_address, callback)
 
-                process.write(instruction_address, jmp_to_shellcode)
+            #if asmm is not None:
+            #    pass
+            #    jmp_to_shellcode = asm(asmm, instruction_address)
+            #    print("write:", asmm, "len:", len(jmp_to_shellcode), "at:", instruction_address)
+
+            #    process.write(instruction_address, jmp_to_shellcode)
 
                 #We add a callback to the breakpoint. That was coded in to the jump table.
-                external_breakpoints[break_point_entry] = callback
-            else: #No tactic was found to make this breakpoint in to shellcode using a slow breakpoint
-                event.debug.break_at(pid, instruction_address, callback)
+            #    external_breakpoints[break_point_entry] = callback
+            #else: #No tactic was found to make this breakpoint in to shellcode using a slow breakpoint
+
             #break
 
 
@@ -814,7 +958,7 @@ def function_goto_break_point(inside_function_id, instruction_address, code, cal
     #
     #    if last_known_function != inside_function_id:
     #        print("thread:", tid, " "*(2*(len(call_stack[tid])-1)), "switched function, from:", last_known_function, "to:", inside_function_id)
-    #        call_stack[tid][-1] = insid_function_id
+    #        call_stack[tid][-1] = inside_function_id
 
     process = event.get_process()
     context = thread.get_context()
