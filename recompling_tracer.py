@@ -289,14 +289,14 @@ def add_jump_table_entry(instruction_address_not_used, instructions, process, ca
             jump_type = 'normal'
 
             #Add break point for tracking
-            new_code = asm("int 3")
+            new_code = b'\xCC'
             code.append(new_code)
             new_instruction_address += len(new_code)
             break_point_entry = new_instruction_address
 
         elif instruction_len >= 2 and instruction_parts[0] in ("call"):
-            insert_len = 2
-            jump_type = '2byte'
+            insert_len = 1
+            jump_type = 'call'
         else:
             insert_len = 1
             jump_type = '1byte'
@@ -306,9 +306,9 @@ def add_jump_table_entry(instruction_address_not_used, instructions, process, ca
         asmm = False
         if jump_type == 'normal':
             asmm = f"jmp 0x{jump_to_address:x}"+(";nop"*extra_bytes)
-        elif jump_type == '2byte':
-            asmm = f"int 3"+(";nop"*extra_bytes)
-            break_point_entry = instruction_address + 2
+        elif jump_type == 'call':
+            jmp_to_shellcode = b'\xCC'+(b'\x90'*extra_bytes)
+            break_point_entry = instruction_address + 1
         elif jump_type == '1byte':
             jmp_to_shellcode = b'\xCC'
             break_point_entry = instruction_address + 1
@@ -367,11 +367,8 @@ def add_jump_table_entry(instruction_address_not_used, instructions, process, ca
         else:
             return False, break_point_entry
 
-        #asmembly.append(instruction_asm) #disable this untill you manage to remove the labels from the disasembly
-        #print("asm:", instruction_asm)
-        new_code = asm(instruction_asm, new_instruction_address)
 
-        #print("raw:", instruction_raw_bytes, new_code)
+        new_code = asm(instruction_asm, new_instruction_address)
         code.append(new_code)
         new_instruction_address += len(new_code)
 
@@ -408,9 +405,67 @@ def add_jump_table_entry(instruction_address_not_used, instructions, process, ca
 
     return jump_to_address, break_point_entry
 
+def deal_with_injection_callaback(callback, save_place, event):
+    global is_in_injecetd_code
+    del external_breakpoints[save_place]
+    callback(event)
+    is_in_injecetd_code = False
+
+is_in_injecetd_code = False
+code_injection_address = None
+register_save_address = None
+def inject_asembly(process,  code, return_address, code_done_callback = None):
+    save_place = code_injection_address
+    asmembly1 = f"""
+    pushfq
+    sub   rsp, 8
+    push rax; push rcx; push rdx; push rbx
+    push rbp; push rsi; push rdi
+    push r8;  push r9;  push r10; push r11
+    push r12; push r13; push r14; push r15
+    mov eax, 0x0D
+    xor ecx, ecx
+    cpuid
+    movabs rbx, 0x{register_save_address:016X}
+    xsave64 [rbx]
+    {code}"""
+
+    if code_done_callback is not None:
+        asmembly1 += ';int 3;'
+    else:
+        exit("Not implemented, you need to speficy a callback so we can know when we are out of the injecetd code and set is_in_injecetd_code = False")
+        #To fix we need to use multiple save addresses and code injection addresses
+
+    shellcode1 = asm(asmembly1, save_place)
+    print(asmembly1)
+    save_place += len(shellcode1)
+    if code_done_callback is not None:
+        external_breakpoints[save_place] = partial(deal_with_injection_callaback, code_done_callback, save_place)
+
+    shellcode2 = asm(f"""
+    movabs rbx, 0x{register_save_address:016X}
+    xrstor64 [rbx]
+    pop r15; pop r14; pop r13; pop r12
+    pop r11; pop r10; pop r9;  pop r8
+    pop rdi; pop rsi; pop rbp; pop rbx
+    pop rdx; pop rcx; pop rax
+    add   rsp, 8
+    popfq
+    jmp 0x{return_address:x}
+    """, save_place)
+
+    shellcode = shellcode1 + shellcode2
+
+    process.write(code_injection_address, shellcode)
+    return code_injection_address
+
+def test_called_function(event):
+    print("executed injected code")
+    #exit(0)
+
 hProcess = None
 external_breakpoints = {}
-jump_breakpoints = {}
+code_to_run = []
 call_relocations = {}
 call_stack = {}
 last_function = {}
@@ -419,7 +474,7 @@ shell_code_address = None
 process_handle = None
 exe_basic_name = None
 def my_event_handler( event ):
-    global COde_started, hProcess, shell_code_address, exe_basic_name, process_handle
+    global COde_started, hProcess, shell_code_address, exe_basic_name, process_handle, register_save_address, code_injection_address, is_in_injecetd_code
 
     # Get the process ID where the event occured.
     pid = event.get_pid()
@@ -454,8 +509,16 @@ def my_event_handler( event ):
 
         if name == "Breakpoint":
             if address in external_breakpoints:
-                callb = external_breakpoints[address]
-                callb(event)
+
+                if len(code_to_run) != 0 and not is_in_injecetd_code:
+                    asm, code_done_callback = code_to_run.pop(0)
+                    break_point_location = address - 1
+                    code_address = inject_asembly(process, asm, break_point_location, code_done_callback)
+                    is_in_injecetd_code = True
+                    event.get_thread().set_pc(code_address)
+                else:
+                    callb = external_breakpoints[address]
+                    callb(event)
                 return
             else:
                 print("unknown break_point called", tid, address)
@@ -525,7 +588,9 @@ def my_event_handler( event ):
                         rva = exp.address
                         virtual_address = base_addr + rva
                         print(f"{name} virtual_address: 0x{virtual_address:X}")
-                        #if name == "hook_function":
+                        if name == "print_text":
+                            asemb = f"call 0x{virtual_address:X}"
+                            code_to_run.append((asemb, test_called_function))
                         #    process_handle = process.get_handle()
                         #    run_func_hook_in_process(process_handle, process, virtual_address, base_addr, base_addr+50)
                         #    process.close_handle()
@@ -555,12 +620,27 @@ def my_event_handler( event ):
             size = 0x100000
             #For some reason we cant ask for the acutal base address
             base_ask_addr = base_addr - size
-            preferred_address = (base_ask_addr + 0x10000 - 1) & ~(0x10000 - 1)
+            preferred_address = base_ask_addr #(base_ask_addr + 0x10000 - 1) & ~(0x10000 - 1)
             ctypes.windll.kernel32.VirtualAllocEx.restype = ctypes.c_ulonglong
             base_injection_addr = ctypes.windll.kernel32.VirtualAllocEx(process_handle, ctypes.c_void_p(preferred_address), size, 0x3000, 0x40)
             if base_injection_addr == 0:
                 print("could not alocate jump to table, please try again this seams sort of random")
                 exit(0)
+
+
+            register_save_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 4096, 0x3000, 0x04)
+            if not register_save_address:
+                print("Failed to allocate register_save_address memory in target process: {}".format(ctypes.WinError()))
+                exit(0)
+
+            base_ask_addr = base_addr - size*2
+            preferred_address = base_ask_addr
+
+            code_injection_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, ctypes.c_void_p(preferred_address), 0x100000, 0x3000, 0x40)
+            if not code_injection_address:
+                print("Failed to allocate code_injection_address memory in target process: {}".format(ctypes.WinError()))
+                exit(0)
+
             process.close_handle()
 
             print("alocated", hex(base_addr), hex(base_injection_addr), abs(base_addr-base_injection_addr))
@@ -977,7 +1057,14 @@ def function_goto_break_point(inside_function_id, instruction_address, code, cal
         print("thread:", tid, " "*(2*len(call_stack[tid])), "Call to function:", to_fuction_id, "call_num:", call_num, "in function:", inside_function_id)
         is_external_API = False
     else:
-        API_func_desc = get_function_desc(target_addr)
+        try:
+            API_func_desc = get_function_desc(target_addr)
+        except Exception as e:
+            import traceback
+            print(target_addr, code, context, instruction_address)
+            traceback.print_exc()
+            print("filed to get API_func_desc", e)
+            exit(0)
         print("thread:", tid, " "*(2*len(call_stack[tid])), "Call to: ", API_func_desc, " API in function:", inside_function_id, "call_num:", call_num)
         to_fuction_id = API_func_desc
         is_external_API = True
@@ -1253,12 +1340,14 @@ def call_asm2addr(code, context, process):
             if op == '-':
                 displacement = -displacement
 
-
-
         base_val = context[reg]
+
+        org_location = code[0]
+        org_ret_location = org_location + code[1]
 
         #Since Rip counts on each instruction we need to account for the length of the call instruction that we have not enterd yeat
         if reg == 'Rip':
+            base_val = code[0] #We may have move the instruction so RIP will be incorrect for the original asembly code
             base_val += code[1] #Add the length of the call instruciton
 
         effective_addr = base_val + displacement
