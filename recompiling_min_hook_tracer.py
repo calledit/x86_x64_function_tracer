@@ -239,7 +239,7 @@ def loaded_dll(dll_name, event):
         print("failed to load dll:", dll_name)
         exit()
 
-def min_hooked_function(jump_table_address, event):
+def min_hooked_function(jump_table_address, callback, event):
     global remote_memory
 
     thread = event.get_thread()
@@ -255,6 +255,7 @@ def min_hooked_function(jump_table_address, event):
     asmm = f"int 3;jmp [RIP]"#Works but wont allow tracking of RET
     #asmm = f"int 3;sub rsp, 0x28;call [RIP + 0x7];int 3;add rsp, 0x28;ret" #This sort of works but it creaches after a while, unshure exaclt why
     jump_code = asm(asmm, jump_table_address) + struct.pack("<Q", address_to_trampoline)
+    external_breakpoints[jump_table_address+2] = callback
     process.write(jump_table_address, jump_code)
 
 def min_hook_enabled(event):
@@ -269,18 +270,18 @@ def hook_functions():
 
     hook_function = dll_func['hook_function']
     enable_function = dll_func['enable_hooks']
-    for target_fn_addr in functions_to_hook:
+    for target_fn_addr, callback in functions_to_hook:
         print("hook", target_fn_addr, "using:", dll_func['hook_function'])
 
         jump_table_address = shell_code_address + shell_code_address_ofset
 
-        shell_code_address_ofset += 100 # 100 bytes might be enogh
+        shell_code_address_ofset += 32 # 100 bytes might be enogh
 
-        code_to_run.append((f"sub rsp, 0x20;mov rcx, 0x{target_fn_addr:016X};mov rdx, 0x{jump_table_address:016X};mov r8, 0x{remote_memory:016X};mov rax, 0x{hook_function:016X};call rax;add rsp, 0x20", partia
-l(min_hooked_function, jump_table_address)))
+        code_to_run.append((f"mov rcx, 0x{target_fn_addr:016X};mov rdx, 0x{jump_table_address:016X};mov r8, 0x{remote_memory:016X};mov rax, 0x{hook_function:016X};call rax", partial(min_hooked_function, jump_
+table_address, callback)))
 
     #Enable hooks
-    code_to_run.append((f"mov rax, 0x{enable_function:016X};call rax", min_hook_enabled))
+    code_to_run.append((f"sub rsp, 0x28;mov rax, 0x{enable_function:016X};call rax;add rsp, 0x28;", min_hook_enabled))
 
 def run_loadlibrary_in_process(h_process, process, dll_path):
     global remote_memory, shell_code_address, shell_code_address_ofset
@@ -526,11 +527,10 @@ def inject_asembly(process,  code, return_address, code_done_callback = None):
     pop rdx; pop rcx; pop rax
     add   rsp, 8
     popfq
-    push 0x{return_address:016X}
-    ret
+    jmp [RIP]
     """
     print(asmembly2)
-    shellcode2 = asm(asmembly2, save_place)
+    shellcode2 = asm(asmembly2, save_place) + struct.pack("<Q", return_address)
 
     shellcode = shellcode1 + shellcode2
 
@@ -554,9 +554,10 @@ pdata_function_ids = {}
 shell_code_address = None
 process_handle = None
 Initiating = True
+add_dll = True
 exe_basic_name = None
 def my_event_handler( event ):
-    global COde_started, hProcess, shell_code_address, exe_basic_name, process_handle, register_save_address, code_injection_address, is_in_injecetd_code, Initiating
+    global add_dll, COde_started, hProcess, shell_code_address, exe_basic_name, process_handle, register_save_address, code_injection_address, is_in_injecetd_code, Initiating
 
     # Get the process ID where the event occured.
     pid = event.get_pid()
@@ -599,21 +600,32 @@ def my_event_handler( event ):
             inject_ok = False
             if address in external_breakpoints or (Initiating and address == entry_address):
                 inject_ok = True
+                #if Initiating:
+                #    event.debug.stalk_at(pid, entry_address)
 
+            #print("Info:", Initiating, inject_ok, is_in_injecetd_code, address)
             if len(code_to_run) != 0 and not is_in_injecetd_code and inject_ok:
-                if Initiating:
-                    event.debug.dont_stalk_at(pid, entry_address)
-                asm, code_done_callback = code_to_run.pop(0)
-                break_point_location = address - 1
-                code_address = inject_asembly(process, asm, break_point_location, code_done_callback)
+                #if Initiating:
+                #    event.debug.dont_stalk_at(pid, entry_address)
+                asmd, code_done_callback = code_to_run.pop(0)
+                break_point_location = address # minus one if own breakpoint just address if winappdbgs breakpoint
+                if address != entry_address:
+                    break_point_location -= 1
+                code_address = inject_asembly(process, asmd, break_point_location, code_done_callback)
+                print("injected assembly:", asmd, "jump back to addres:", break_point_location)
                 is_in_injecetd_code = True
+                event.debug.dont_break_at(pid, entry_address) #disable breakpoint so it is not copied
                 event.get_thread().set_pc(code_address)
-                if Initiating:
-                    event.debug.stalk_at(pid, entry_address)
+                #if Initiating:
+                #    event.debug.stalk_at(pid, entry_address)
                 return
 
-            if len(code_to_run) == 0 and Initiating:
-                event.debug.dont_stalk_at(pid, entry_address)
+            if Initiating and is_in_injecetd_code:
+                event.debug.break_at(pid, entry_address)#enable breakpoint after removing it to mitigate copying of it
+
+            if len(code_to_run) == 0 and Initiating and not is_in_injecetd_code and inject_ok:
+                print("disable entry break point")
+                event.debug.dont_break_at(pid, entry_address)
                 Initiating = False
 
             if address in external_breakpoints:
@@ -686,7 +698,9 @@ def my_event_handler( event ):
             process_handle = process.get_handle()
 
             # We inject a dll that has fast code for tracing as well as access to MinHook
-            run_loadlibrary_in_process(process_handle, process, "calltracer.dll")
+            if add_dll:
+                run_loadlibrary_in_process(process_handle, process, "calltracer.dll")
+                add_dll = False
 
             base_addr = modules[exe_basic_name]
             ctypes.windll.kernel32.VirtualAllocEx.argtypes = [
@@ -785,7 +799,7 @@ def my_event_handler( event ):
                     json.dump(disasembled_functions, f)
 
             #Now that we have all the instructions we add a break point on the entrypoint
-            event.debug.stalk_at(pid, entry_address, exe_entry)
+            event.debug.break_at(pid, entry_address, exe_entry)
 
 
     if name == "Process creation event":
@@ -859,15 +873,15 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
 
         if instruction_num == 0:
         #    callback_to_add.append(partial(enter_callback, function_id, instruction_address))
-            functions_to_hook.append(instruction_address)
+            functions_to_hook.append((instruction_address, partial(enter_callback, function_id, instruction_address)))
             is_known_jump_to_adress = True
             print("type: enter_callback")
 
-        #if add_next_inscruction_as_return:
-        #    print("type: exit_callback")
-        #    known_return_addresses.append(instruction_address)
-        #    callback_to_add.append(partial(exited_callback, function_id, instruction_address, call_num))
-        #    add_next_inscruction_as_return = False
+        if add_next_inscruction_as_return:
+            print("type: exit_callback")
+            known_return_addresses.append(instruction_address)
+            callback_to_add.append(partial(exited_callback, function_id, instruction_address, call_num))
+            add_next_inscruction_as_return = False
 
         if 'call' == instruction_name:
             print("type: callback")
@@ -875,10 +889,10 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
             calls.append(instruction_address)
             call_num = len(calls)-1
             callback_to_add.append(partial(call_callback, function_id, instruction_address, instruction, call_num))
-        #elif 'ret' == instruction_name:
-        #    print("type: return")
-        #    callback_to_add.append(partial(ret_callback, function_id, instruction_address))
-        #    rets += 1
+        elif 'ret' == instruction_name:
+            print("type: return")
+            callback_to_add.append(partial(ret_callback, function_id, instruction_address))
+            rets += 1
 
         #if we want callbacks from this instruction address
         if len(callback_to_add) != 0:
