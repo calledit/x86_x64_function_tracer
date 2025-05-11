@@ -239,23 +239,54 @@ def loaded_dll(dll_name, event):
         print("failed to load dll:", dll_name)
         exit()
 
-def min_hooked_function(jump_table_address, callback, event):
+ret_replacements = {}
+def min_hooked_entry_hook(ujump_table_address, callback, event):
+    if ujump_table_address not in ret_replacements:
+        ret_replacements[ujump_table_address] = []
+
+    thread = event.get_thread()
+    process = event.get_process()
+    context = thread.get_context()
+    stack_pointer = context['Rsp']
+    return_address = read_ptr(process, stack_pointer)
+
+    ret_replacements[ujump_table_address].append(return_address)
+    print("min_hooked_entry_hook", ujump_table_address, "table:", ret_replacements[ujump_table_address])
+    callback(event)
+
+def min_hooked_exit_hook(ujump_table_address, callback, event):
+    original_return_address = ret_replacements[ujump_table_address].pop()
+    print("min_hooked_exit_hook", original_return_address)
+    event.get_thread().set_pc(original_return_address)
+    callback(event)
+
+def min_hooked_function(jump_table_address, enter_callback, exit_callback, event):
     global remote_memory
 
     thread = event.get_thread()
     context = thread.get_context()
     result = context['Rax']
 
+    if result != 0:
+        print("failed to hook function:", jump_table_address)
+        exit()
+
+
     process = event.get_process()
-    #print(jump_table_address)
     address_to_trampoline = process.read(remote_memory, 8)
     address_to_trampoline = struct.unpack("<Q", address_to_trampoline)[0]
     print("min_hooked_function:", result, "addr:", address_to_trampoline)
-    #exit()
-    asmm = f"int 3;jmp [RIP]"#Works but wont allow tracking of RET
-    #asmm = f"int 3;sub rsp, 0x28;call [RIP + 0x7];int 3;add rsp, 0x28;ret" #This sort of works but it creaches after a while, unshure exaclt why
-    jump_code = asm(asmm, jump_table_address) + struct.pack("<Q", address_to_trampoline)
-    external_breakpoints[jump_table_address+2] = callback
+
+    second_interupt = jump_table_address + (24 - 2)
+    #This is the tracking asembly, it adds a braek point before and after jumping to the function.
+    #It achives this by saving the return addres, then modifiying it, then when the funtion is done jumping to
+    #the saved return address.
+    asmm = f"int 3;push rax;mov rax, [RIP + 22];mov [RSP+0x8], rax;pop rax;jmp [RIP + 0x2];int 3"
+    jump_code = asm(asmm, jump_table_address) + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", second_interupt)
+
+    external_breakpoints[jump_table_address+2] = part = partial(min_hooked_entry_hook, jump_table_address, enter_callback)
+
+    external_breakpoints[second_interupt+2] = partial(min_hooked_exit_hook, jump_table_address, exit_callback)
     process.write(jump_table_address, jump_code)
 
 def min_hook_enabled(event):
@@ -270,15 +301,15 @@ def hook_functions():
 
     hook_function = dll_func['hook_function']
     enable_function = dll_func['enable_hooks']
-    for target_fn_addr, callback in functions_to_hook:
+    for target_fn_addr, enter_callback, exit_callback in functions_to_hook:
         print("hook", target_fn_addr, "using:", dll_func['hook_function'])
 
         jump_table_address = shell_code_address + shell_code_address_ofset
 
-        shell_code_address_ofset += 32 # 100 bytes might be enogh
+        shell_code_address_ofset += 50 # 100 bytes might be enogh
 
         code_to_run.append((f"mov rcx, 0x{target_fn_addr:016X};mov rdx, 0x{jump_table_address:016X};mov r8, 0x{remote_memory:016X};mov rax, 0x{hook_function:016X};call rax", partial(min_hooked_function, jump_
-table_address, callback)))
+table_address, enter_callback, exit_callback)))
 
     #Enable hooks
     code_to_run.append((f"sub rsp, 0x28;mov rax, 0x{enable_function:016X};call rax;add rsp, 0x28;", min_hook_enabled))
@@ -873,7 +904,7 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
 
         if instruction_num == 0:
         #    callback_to_add.append(partial(enter_callback, function_id, instruction_address))
-            functions_to_hook.append((instruction_address, partial(enter_callback, function_id, instruction_address)))
+            functions_to_hook.append((instruction_address, partial(enter_callback, function_id, instruction_address), partial(ret_callback, function_id, instruction_address)))
             is_known_jump_to_adress = True
             print("type: enter_callback")
 
@@ -891,7 +922,7 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
             callback_to_add.append(partial(call_callback, function_id, instruction_address, instruction, call_num))
         elif 'ret' == instruction_name:
             print("type: return")
-            callback_to_add.append(partial(ret_callback, function_id, instruction_address))
+        #    callback_to_add.append(partial(ret_callback, function_id, instruction_address))
             rets += 1
 
         #if we want callbacks from this instruction address
