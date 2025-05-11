@@ -251,12 +251,12 @@ def min_hooked_entry_hook(ujump_table_address, callback, event):
     return_address = read_ptr(process, stack_pointer)
 
     ret_replacements[ujump_table_address].append(return_address)
-    print("min_hooked_entry_hook", ujump_table_address, "table:", ret_replacements[ujump_table_address])
+    #print("min_hooked_entry_hook", ujump_table_address, "table:", ret_replacements[ujump_table_address])
     callback(event)
 
 def min_hooked_exit_hook(ujump_table_address, callback, event):
     original_return_address = ret_replacements[ujump_table_address].pop()
-    print("min_hooked_exit_hook", original_return_address)
+    #print("min_hooked_exit_hook", original_return_address)
     event.get_thread().set_pc(original_return_address)
     callback(event)
 
@@ -365,7 +365,7 @@ def go_jump_breakpoint(jump_to_adddress, callback, event):
 
 
 shell_code_address_ofset = 20 #We start at 20 for no particular reason, might be good to have free space...
-def add_jump_table_entry(instruction_address_not_used, instructions, process, callback):
+def add_jump_table_entry(instruction_address_not_used, instructions, process, enter_callback, exit_callback):
     global shell_code_address, shell_code_address_ofset
 
     asmembly = []
@@ -467,9 +467,9 @@ def add_jump_table_entry(instruction_address_not_used, instructions, process, ca
             process.write(instruction_address, jmp_to_shellcode)
             #We add a callback to the breakpoint. That was coded in to the jump table.
             if jump_type == 'normal':
-                external_breakpoints[break_point_entry] = callback
+                external_breakpoints[break_point_entry] = enter_callback
             else:
-                external_breakpoints[break_point_entry] = partial(go_jump_breakpoint, jump_to_address, callback)
+                external_breakpoints[break_point_entry] = partial(go_jump_breakpoint, jump_to_address, enter_callback)
         else:
             return False, break_point_entry
 
@@ -483,6 +483,10 @@ def add_jump_table_entry(instruction_address_not_used, instructions, process, ca
 
         break #only check first instruciton
 
+    code.append(b'\xCC')
+    new_instruction_address += 1
+    break_point_exit = new_instruction_address
+    external_breakpoints[break_point_exit] = exit_callback
 
     #displacement = jump_back_address - new_instruction_address
     instruction_asm = f"jmp 0x{jump_back_address:x}"
@@ -911,7 +915,7 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
         if add_next_inscruction_as_return:
             print("type: exit_callback")
             known_return_addresses.append(instruction_address)
-            callback_to_add.append(partial(exited_callback, function_id, instruction_address, call_num))
+            #callback_to_add.append(partial(exited_callback, function_id, instruction_address, call_num))
             add_next_inscruction_as_return = False
 
         if 'call' == instruction_name:
@@ -928,9 +932,9 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
         #if we want callbacks from this instruction address
         if len(callback_to_add) != 0:
             if len(callback_to_add) > 1:
-                callback = partial(callback_joiner, callback_to_add)
+                enter_callback = partial(callback_joiner, callback_to_add)
             else:
-                callback = callback_to_add[0]
+                enter_callback = callback_to_add[0]
 
 
             if first_func is None:
@@ -947,9 +951,10 @@ def insert_break_at_call(event, pid, instructions, function_id, call_callback, r
             asmm = None
             break_point_entry = None
 
-            jump_to_address, break_point_entry = add_jump_table_entry(instruction_address, replace_instructions, process = process, callback = callback)
+            jump_to_address, break_point_entry = add_jump_table_entry(instruction_address, replace_instructions, process, enter_callback, partial(exited_callback, function_id, instruction_address, call_num))
             if not jump_to_address:
                 print("could not create jump_table_entry")
+                exit()
                 event.debug.break_at(pid, instruction_address, callback)
 
             #if asmm is not None:
