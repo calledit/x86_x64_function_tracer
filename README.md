@@ -1,3 +1,53 @@
+# X64 call tracer
+X64 call tracer is a project that has the goal to trace all function calls in a executable.
+
+## Reason behind project
+For reverse engineering it would be useful to get the exact call trace of a binary
+Exactly what jumps where what sections of code calls what addresses and so on.
+
+This information would allow one to find where functions are located in the code. Even if you did not have debug symbols.
+Compilation optimisations might make this impossible in some cases. But in some cases it should work.
+
+There are various tools that promise this ability. None of them work except for simple binaries.
+
+## Dynamic instrumentation tools
+Due to the emense classic nr of instructions that need to be tracked implementing such feature with a classic debugger and breakpoints is to slow.
+The solution to this is a Dynamic instrumentation tool. These exist but are complex beasts.
+On linux you have callgrind a part of the valgrind project. Which should work in wine but does not for some reason. On windows you have DynamoRIO.
+
+There is also a tool called frida that allows you to inject javascript in to any x86 binary. But it is slow based on breakpoints and crashy.
+
+I have been unable to get callgrind to work in complex senarios partly due to how modern games tend to use launchers that verify the executable. You also have DynamoRIO a moster of a project just like callgrind. When you have intelPIN. 
+
+I would like to be able to attach after the process has spawned either by replacing a dll or simply by attaching a debugger to the process id. My hope is that only focusing on tracing function calls will make the project smaller.
+
+
+## Current function
+[function_tracer.py](function_tracer.py)
+
+1. Either spaws a new process or atatches with debuger.
+2. it injects a dll ( calltrace.dll ) that has fast tracing funcitons implemented.
+3. It looks at the .exe .pdata information to find all functions.
+4. It decompiles all functions and replaces all calls with jumps to trampolines that registers the call and then executes it, then registers that the call was finished.
+5. It uses Minhook to instrument all functions. This means we also capture any time a function is enterd. Which is necesicary to capture callbacks from external librarys.
+6. Using a specially crafted trampoline that modifies the return address we also capture when the function returns.
+
+## Current isues
+1. Currently all tracing is still done using brakpoints this is to slow (so slow that some functions crach as they have race conditions with other threads).
+	The solution to this is to move the actuall tracing in to calltrace.dll removing the need for tracing using breakpoints.
+2. MinHook can not instrument functions that are very short, for example a function that only consists of a single ret instruction.
+	The solution to this is to either get rid of MinHook. Or to implement a work around for such functions.
+3. Some calls like "call rax" is to short (only 2 bytes long) to be replaced by a long jump you could replace it with a short jump (but it can only jump 127 bytes forward or back).
+	The current solution to this is to replace such instructions with a 0xCC breakpoint and then implement the jump in the debuger. This works but is slow.
+4. When the work around for nr 3 is used MinHook will sometimes relocate the 0xCC breakpoint when this happens we lose track of the brak point and can no longer do the jump properly.
+	The solution to this is either to get rid of MinHook or to run MinHook first then instrument the MinHook trampoline or to somehow track where MinHook moved the breakpoint.
+	Given the issues with MinHook the best solution tís probaly to reimplement the MinHook injection code in python.
+ 
+
+
+
+
+# Old README (will be removed as new one is filled in) 
 # game render loop vr injector
 Library that finds the render function in a x64 executable.
 

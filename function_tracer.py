@@ -78,6 +78,7 @@ pdata: Optional[bytes] = None
 pdata_functions: List[Tuple[int, int, int, int]] = []
 pdata_function_ids: Dict[int, str] = {}
 exe_entry_address: int = 0
+disassembled_functions: List[List[Tuple[int, int, str, str]]] = []
 
 # Simple call stack for pretty printing
 call_stack: List[str] = []
@@ -212,6 +213,8 @@ def min_hooked_entry_hook(ujump_table_address: int, callback: Callable[[Any], No
     I am a bit afraid that this might get called multiple times as code in a function may jump bak to the first instruction.
     This is somewhat unlikly as the first few instructions are generally used to set up the stack and stuff like that.
     This may register to many return addreses when call stack optimizations are used. WIll probaly need a fix for that.
+    Main "issue" is tail call optimization. min_hooked_entry_hook will execute even when it is jumped to and not called. ie part of tail call optimization.
+    This means ret_replacements will keep growing and not get poped at tthe end. Making it out of sync with reality.
     """
     thread = event.get_thread()
     tid = thread.get_tid()
@@ -241,14 +244,21 @@ def min_hooked_exit_hook(ujump_table_address: int, callback: Callable[[Any], Non
     callback(event)
 
 
-def min_hooked_function(jump_table_address: int, enter_callback: Callable[[Any], None], exit_callback: Callable[[Any], None], event: Any) -> None:
+def min_hooked_function(function_addres: int, jump_table_address: int, enter_callback: Callable[[Any], None], exit_callback: Callable[[Any], None], event: Any) -> None:
     """Executed after MinHook finishes hooking a function."""
     thread = event.get_thread()
     context = thread.get_context()
     result = context["Rax"]
 
     if result != 0:
-        print("failed to hook function:", jump_table_address)
+        print("failed to hook function:", function_addres, result)
+        pdata_by_start = {
+            start: (end, unwind, ordinal)
+            for start, end, unwind, ordinal in pdata_functions
+        }
+        end, unwind, ordinal = pdata_by_start[function_addres]
+        print(disassembled_functions[ordinal])
+        
         sys.exit()
 
     process = event.get_process()
@@ -300,7 +310,7 @@ def hook_functions() -> None:
             f"mov r8, {shell_code_address};"
             f"mov rax, {hook_function};"
             "call rax",
-            partial(min_hooked_function, jump_table_address, enter_callback, exit_callback),
+            partial(min_hooked_function, target_fn_addr, jump_table_address, enter_callback, exit_callback),
         ))
 
     # Enable hooks once all are queued
@@ -361,8 +371,9 @@ def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: 
 
 def hook_calls(process: Any, event: Any, pid: int) -> None:
     """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
+    global disassembled_functions
     # Cache to avoid repeated disassembly of large binaries
-    disassembled_functions: List[List[Tuple[int, int, str, str]]] = []
+    
     disassembled_cache_file = exe_basic_name + "_instructions_cache.json"
     save_cache = False
 
@@ -374,13 +385,14 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
         function_id = get_function_id(function_start_addr)
 
         # Queue MinHook entry/exit wrapping for this function
-        functions_to_hook.append(
-            (
-                function_start_addr,
-                partial(function_enter_break_point, function_id, function_start_addr),
-                partial(function_exit_break_point, function_id, function_start_addr),
+        if False:
+            functions_to_hook.append(
+                (
+                    function_start_addr,
+                    partial(function_enter_break_point, function_id, function_start_addr),
+                    partial(function_exit_break_point, function_id, function_start_addr),
+                )
             )
-        )
 
         # Disassemble and patch CALL instructions in the function body
         if len(disassembled_functions) > pdata_ordinal:
@@ -390,8 +402,13 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
             instructions = process.disassemble_string(function_start_addr, instcode)
             disassembled_functions.append(instructions)
             save_cache = True
-
-        insert_break_at_calls(event, pid, instructions, function_id)
+        print("ordinal:", pdata_ordinal)
+        if pdata_ordinal not in(122,):
+            insert_break_at_calls(event, pid, instructions, function_id)
+        
+        if pdata_ordinal == 124:
+            break
+        
 
     if save_cache:
         with open(disassembled_cache_file, "w") as f:
@@ -440,10 +457,10 @@ def add_instruction_redirect(
             new_instruction_address += len(new_code)
             break_point_entry = new_instruction_address
 
-        elif instruction_len >= 2 and instruction_parts[0] in ("call",):
+        elif instruction_len >= 2 and instruction_parts[0] in ("call",):#FIXMEEE whenever minhook moves these breakpoints shit stops working
             insert_len = 1
             jump_type = "call"
-        else:
+        else:#FIXMEEE whenever minhook moves these breakpoints shit stops working
             insert_len = 1
             jump_type = "1byte"
 
@@ -471,18 +488,22 @@ def add_instruction_redirect(
             rip_address = f"{rip_address}"
             instruction_asm = instruction_asm.replace("rip", rip_address)
         elif "rip" in instruction_asm:
-            print("If instruction directly uses RIP in a non-relative way we can't move it")
+            raise ValueError("If instruction directly uses RIP in a non-relative way we can't move it" + instruction_asm)
             return False, break_point_entry
-
+        static = True
         if instruction_parts[0] in ("call", "jmp"):
             # Recompile jmps and calls
             if len(instruction_parts) == 2 and instruction_parts[1].startswith("0x"):
                 # Absolute target; nothing to change
                 print("static call/jmp")
+                static = True
                 if instruction_parts[0] == "call":
                     call_relocate = True
             else:
                 print("dynamic call/jmp")
+                static = False
+                #return False, break_point_entry
+                #return False, break_point_entry
                 if instruction_parts[0] == "call":
                     call_relocate = True
         elif is_jump:
@@ -492,23 +513,44 @@ def add_instruction_redirect(
             print("non-movable instruction", instruction_asm)
             return False, break_point_entry
 
-        if asmm or jmp_to_shellcode is not None:
+        if asmm is not None or jmp_to_shellcode is not None:
             if jmp_to_shellcode is None:
                 jmp_to_shellcode = asm(asmm, instruction_address)
-            print(jump_type,'org:', instruction_asm, "write:", asmm, "len:", len(jmp_to_shellcode), "at:", instruction_address, "jump_to_address:", jump_to_address, "diff:", jump_to_address - instruction_address)
-            process.write(instruction_address, jmp_to_shellcode)
+            print(jump_type,'org:', instruction_asm, "(", instruction_len, ") write:", asmm, "bytes:", len(jmp_to_shellcode), "at:", instruction_address, "jump_to_address:", jump_to_address, "diff:", jump_to_address - instruction_address)
+            
             # Register the breakpoint callback
             if jump_type == "normal":
                 external_breakpoints[break_point_entry] = enter_callback
             else:
                 external_breakpoints[break_point_entry] = partial(go_jump_breakpoint, jump_to_address, enter_callback)
         else:
+            raise ValueError("should never happen")
             return False, break_point_entry
 
-        # Append relocated original instruction to shellcode block
-        new_code = asm(instruction_asm, new_instruction_address)
-        code.append(new_code)
-        new_instruction_address += len(new_code)
+        # If this function depends on the return address, problematicly this does not let us capture the return 
+        if static and False:
+            asd = "push rax;push rax;mov rax, [RIP + 12];mov [RSP+0x8], rax;pop rax;jmp [rip + 8];"
+            new_code = asm(asd, new_instruction_address)
+
+            code.append(new_code)
+            new_instruction_address += len(new_code)
+            
+            new_code = struct.pack("<Q", jump_back_address)
+            code.append(new_code)
+            new_instruction_address += len(new_code)
+            
+            target = int(instruction_parts[1], 16)
+            new_code = struct.pack("<Q", target)
+            code.append(new_code)
+            new_instruction_address += len(new_code)
+            
+            print('function_id:', get_function_id(target))
+            
+            
+        else:
+            new_code = asm(instruction_asm, new_instruction_address)
+            code.append(new_code)
+            new_instruction_address += len(new_code)
         break  # Only relocate the first instruction in list
 
     # Add exit breakpoint and final jump back to original flow
@@ -528,12 +570,13 @@ def add_instruction_redirect(
 
     shell_code_address_offset += shell_len + 20
     process.write(jump_to_address, shellcode)
+    process.write(instruction_address, jmp_to_shellcode)
 
     return jump_to_address, break_point_entry
 
 
 def go_jump_breakpoint(jump_to_address: int, callback: Callable[[Any], None], event: Any) -> None:
-    #print("go_jump_breakpoint", jump_to_address)
+    print("go_jump_breakpoint", jump_to_address)
     event.get_thread().set_pc(jump_to_address)
     callback(event)
 
@@ -553,17 +596,20 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
             
             
             reg, indirect, offset = asm2regaddr(instruction)
+            #To get the target value to the function_call_break_point() you would need to edit add_instruction_redirect() to take reg, indirect and offset and save/return the target value somehow 
             replace_instructions = [instruction]
             jump_to_address, break_point_entry = add_instruction_redirect(
                 instruction_address,
                 replace_instructions,
                 process,
-                partial(function_call_break_point, function_id, instruction_address, call_num, instruction, reg, indirect, offset),
+                partial(function_call_break_point, function_id, instruction_address, call_num, reg, indirect, offset),
                 partial(function_called_break_point, function_id, instruction_address, call_num),
             )
             if not jump_to_address:
-                print("could not create jump_table_entry")
-                sys.exit()
+                print("could not create jump_table_entry for instruction", instruction, instructions)
+                #break
+                #exit(0)
+                #sys.exit()
             call_num += 1
 
 
@@ -644,17 +690,15 @@ def function_exit_break_point(function_id: str, instruction_address: int, event:
     print("  " * (len(call_stack) + 1) + "exit: " + function_id)
 
 
-def function_call_break_point(parent_function_id: str, instruction_address: int, call_num: int, instruction: Tuple[int, int, str, str], reg, indirect, offset, event: Any) -> None:
+def function_call_break_point(parent_function_id: str, instruction_address: int, call_num: int, reg, indirect, offset, event: Any) -> None:
     thread = event.get_thread()
     pc = thread.get_pc()
     tid = event.get_tid()
     process = event.get_process()
 
     context = thread.get_context()
-    #target_addr_old = call_asm2addr(instruction, context, process)
-    #target_addr = target_addr_old
+
     target_addr = get_targetaddr(reg, indirect, offset, context, process)
-    #assert(target_addr_old == target_addr), "new target != old"
     target_function_id = get_function_id(target_addr)
 
     call_stack.append("call " + target_function_id)
