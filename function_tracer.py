@@ -168,7 +168,7 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, address_clos
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
 
     # Allocate large RX region for shellcode near code
-    size = 0x100000
+    size = 0x1000000
     base_ask_addr = address_close_to_code - size * 5
     preferred_address = base_ask_addr
     base_injection_addr = ctypes.windll.kernel32.VirtualAllocEx(
@@ -207,7 +207,12 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, address_clos
 
 
 def min_hooked_entry_hook(ujump_table_address: int, callback: Callable[[Any], None], event: Any) -> None:
-    """Breakpoint handler for function entry via MinHook trampoline wrapper."""
+    """
+    Breakpoint handler for function entry via MinHook trampoline wrapper.
+    I am a bit afraid that this might get called multiple times as code in a function may jump bak to the first instruction.
+    This is somewhat unlikly as the first few instructions are generally used to set up the stack and stuff like that.
+    This may register to many return addreses when call stack optimizations are used. WIll probaly need a fix for that.
+    """
     thread = event.get_thread()
     tid = thread.get_tid()
 
@@ -220,6 +225,8 @@ def min_hooked_entry_hook(ujump_table_address: int, callback: Callable[[Any], No
     context = thread.get_context()
     stack_pointer = context["Rsp"]
     return_address = read_ptr(process, stack_pointer)
+    
+    #print("saving return address:", return_address, ujump_table_address)
 
     ret_replacements[tid][ujump_table_address].append(return_address)
     callback(event)
@@ -229,6 +236,7 @@ def min_hooked_exit_hook(ujump_table_address: int, callback: Callable[[Any], Non
     """Breakpoint handler for function exit; returns to original address and calls callback."""
     tid = event.get_tid()
     original_return_address = ret_replacements[tid][ujump_table_address].pop()
+    #print("jumping to:", original_return_address, ujump_table_address)
     event.get_thread().set_pc(original_return_address)
     callback(event)
 
@@ -252,13 +260,13 @@ def min_hooked_function(jump_table_address: int, enter_callback: Callable[[Any],
     # Tracking assembly: adds a breakpoint before and after the real function.
     # Saves the return address, modifies it to point to the post-call int3, then jumps.
     asmm = (
-        "int 3;"
-        "push rax;"
-        "mov rax, [RIP + 22];"
-        "mov [RSP+0x8], rax;"
-        "pop rax;"
-        "jmp [RIP + 0x2];"
-        "int 3"
+        "int 3;" # triger interupt for tracing purpose
+        "push rax;" # save value in rax
+        "mov rax, [RIP + 22];" # fill rax with addres leading to second_interrupt
+        "mov [RSP+0x8], rax;" # move the value in rax in to the stack (saving it as a return address)
+        "pop rax;" # restore rax 
+        "jmp [RIP + 0x2];" # jump to address_to_trampoline
+        "int 3" # triger interupt for tracing purpose
     )
     jump_code = asm(asmm, jump_table_address) + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", second_interrupt)
 
@@ -283,14 +291,14 @@ def hook_functions() -> None:
 
     for target_fn_addr, enter_callback, exit_callback in functions_to_hook:
         print("hook", target_fn_addr, "using:", call_tracer_dll_func["hook_function"]) 
-        jump_table_address = (shell_code_address or 0) + shell_code_address_offset
+        jump_table_address = shell_code_address + shell_code_address_offset
         shell_code_address_offset += 50  # ~50 bytes per entry is usually enough
 
         asm_code_to_run.append((
-            f"mov rcx, 0x{target_fn_addr:016X};"
-            f"mov rdx, 0x{jump_table_address:016X};"
-            f"mov r8, 0x{(shell_code_address or 0):016X};"
-            f"mov rax, 0x{hook_function:016X};"
+            f"mov rcx, {target_fn_addr};"
+            f"mov rdx, {jump_table_address};"
+            f"mov r8, {shell_code_address};"
+            f"mov rax, {hook_function};"
             "call rax",
             partial(min_hooked_function, jump_table_address, enter_callback, exit_callback),
         ))
@@ -301,7 +309,7 @@ def hook_functions() -> None:
         asmm = (
             "mov r11, rsp;"
             # Stack alignment considerations omitted per original code
-            f"mov rax, 0x{enable_function:016X};"
+            f"mov rax, {enable_function};"
             "call rax;"
             "mov rsp, r11;"
         )
@@ -401,10 +409,10 @@ def add_instruction_redirect(
 
     Returns (jump_to_address, break_point_entry). jump_to_address is None/False on failure.
     """
-    global shell_code_address_offset
+    global shell_code_address_offset, shell_code_address
 
     code: List[bytes] = []
-    jump_to_address = (shell_code_address or 0) + shell_code_address_offset
+    jump_to_address = shell_code_address + shell_code_address_offset
     new_instruction_address = jump_to_address
     break_point_entry = -1
     jump_back_address: Optional[int] = None
@@ -444,7 +452,7 @@ def add_instruction_redirect(
         asmm: Optional[str] = None
 
         if jump_type == "normal":
-            asmm = f"jmp 0x{jump_to_address:x}" + (";nop" * extra_bytes)
+            asmm = f"jmp {jump_to_address}" + (";nop" * extra_bytes)
         elif jump_type == "call":
             jmp_to_shellcode = b"\xCC" + (b"\x90" * extra_bytes)
             break_point_entry = instruction_address + 1
@@ -459,7 +467,8 @@ def add_instruction_redirect(
         if "rip +" in instruction_asm or "rip -" in instruction_asm:
             print("Accounting for altered RIP", instruction_asm)
             diff = new_instruction_address - instruction[0]
-            rip_address = f"rip - 0x{(diff & 0xFFFFFFFF):x}"
+            rip_address = instruction_address + instruction_len
+            rip_address = f"{rip_address}"
             instruction_asm = instruction_asm.replace("rip", rip_address)
         elif "rip" in instruction_asm:
             print("If instruction directly uses RIP in a non-relative way we can't move it")
@@ -485,9 +494,8 @@ def add_instruction_redirect(
 
         if asmm or jmp_to_shellcode is not None:
             if jmp_to_shellcode is None:
-                print("write:", asmm, "at:", instruction_address, "jump_to_address:", jump_to_address, "diff:", jump_to_address - instruction_address)
                 jmp_to_shellcode = asm(asmm, instruction_address)
-            print("write:", asmm, "len:", len(jmp_to_shellcode), "at:", instruction_address)
+            print(jump_type,'org:', instruction_asm, "write:", asmm, "len:", len(jmp_to_shellcode), "at:", instruction_address, "jump_to_address:", jump_to_address, "diff:", jump_to_address - instruction_address)
             process.write(instruction_address, jmp_to_shellcode)
             # Register the breakpoint callback
             if jump_type == "normal":
@@ -509,7 +517,7 @@ def add_instruction_redirect(
     break_point_exit = new_instruction_address
     external_breakpoints[break_point_exit] = exit_callback
 
-    last_jump_asm = f"jmp 0x{(jump_back_address or 0):x}"
+    last_jump_asm = f"jmp {jump_back_address}"
     print("last_jump asm:", last_jump_asm)
     new_code = asm(last_jump_asm, new_instruction_address)
     code.append(new_code)
@@ -525,6 +533,7 @@ def add_instruction_redirect(
 
 
 def go_jump_breakpoint(jump_to_address: int, callback: Callable[[Any], None], event: Any) -> None:
+    #print("go_jump_breakpoint", jump_to_address)
     event.get_thread().set_pc(jump_to_address)
     callback(event)
 
@@ -532,7 +541,8 @@ def go_jump_breakpoint(jump_to_address: int, callback: Callable[[Any], None], ev
 def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str) -> None:
     """Insert breakpoints at every CALL within a function's instruction list."""
     process = event.get_process()
-
+    
+    call_num = 0
     for instruction_num, instruction in enumerate(instructions):
         instruction_name = instruction[2].split(" ")[0]
         instruction_address = instruction[0]
@@ -540,19 +550,21 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
 
         if instruction_name == "call":
             print("type: callback")
-            call_num = 1  # We treat each encountered call as nr_1 in this simplified loop
-
+            
+            
+            reg, indirect, offset = asm2regaddr(instruction)
             replace_instructions = [instruction]
             jump_to_address, break_point_entry = add_instruction_redirect(
                 instruction_address,
                 replace_instructions,
                 process,
-                partial(function_call_break_point, function_id, instruction_address, call_num, instruction),
+                partial(function_call_break_point, function_id, instruction_address, call_num, instruction, reg, indirect, offset),
                 partial(function_called_break_point, function_id, instruction_address, call_num),
             )
             if not jump_to_address:
                 print("could not create jump_table_entry")
                 sys.exit()
+            call_num += 1
 
 
 def on_debug_event(event: Any, reduce_address: bool = False) -> None:
@@ -632,14 +644,17 @@ def function_exit_break_point(function_id: str, instruction_address: int, event:
     print("  " * (len(call_stack) + 1) + "exit: " + function_id)
 
 
-def function_call_break_point(parent_function_id: str, instruction_address: int, call_num: int, instruction: Tuple[int, int, str, str], event: Any) -> None:
+def function_call_break_point(parent_function_id: str, instruction_address: int, call_num: int, instruction: Tuple[int, int, str, str], reg, indirect, offset, event: Any) -> None:
     thread = event.get_thread()
     pc = thread.get_pc()
     tid = event.get_tid()
     process = event.get_process()
 
     context = thread.get_context()
-    target_addr = call_asm2addr(instruction, context, process)
+    #target_addr_old = call_asm2addr(instruction, context, process)
+    #target_addr = target_addr_old
+    target_addr = get_targetaddr(reg, indirect, offset, context, process)
+    #assert(target_addr_old == target_addr), "new target != old"
     target_function_id = get_function_id(target_addr)
 
     call_stack.append("call " + target_function_id)
@@ -682,12 +697,28 @@ def get_module_from_address(address: int) -> Optional[str]:
             found_base = base
 
     return found_module
+    
+    
+def get_targetaddr(reg, indirect, offset, context, process):
+    """use info to get CALL target given thread context."""
+    target_addr = offset
+    if reg is not None:
+        if reg in context:
+            target_addr += context[reg]
+        else:
+            raise ValueError("Unkownn registry:", reg)
+    if indirect:
+        target_addr = read_ptr(process, target_addr)
+    return target_addr
 
-
-def call_asm2addr(code: Tuple[int, int, str, str], context: Dict[str, int], process: Any) -> int:
-    """Resolve a CALL target address from a disassembled instruction, given thread context."""
+def asm2regaddr(code: Tuple[int, int, str, str]):
+    """parse info needed to get CALL target address from a instruction, given thread context."""
+    reg = None
+    offset = 0
+    indirect = False
     asm_text = code[2]
     if "[" in asm_text:  # indirect call like call [rax+8] or RIP-relative
+        indirect = True
         mem_expr = asm_text.split("[", 1)[1].split("]", 1)[0].strip()
         mem_parts = mem_expr.split(" ")
         if len(mem_parts) != 1:
@@ -695,38 +726,28 @@ def call_asm2addr(code: Tuple[int, int, str, str], context: Dict[str, int], proc
         else:
             reg, op, disp_str = mem_parts[0], "+", "0"
         reg = reg.capitalize()
-        displacement = 0
         if op and disp_str:
-            displacement = int(disp_str, 0)
+            offset = int(disp_str, 0)
             if op == "-":
-                displacement = -displacement
-
-        base_val = context[reg]
+                offset = -offset
+        
 
         # Since RIP counts per instruction, account for CALL length we haven't executed yet
         if reg == "Rip":
-            base_val = code[0]
-            base_val += code[1]
-
-        effective_addr = base_val + displacement
-        target_addr = read_ptr(process, effective_addr)
+            base_val = code[0] + code[1]
+            offset = base_val + offset
+            reg = None
 
     else:
         label = asm_text.split(" ")[1]
 
         if label.startswith("0x"):
             target_addr = int(label, 16)
-            return target_addr
+            return reg, indirect, target_addr
 
         reg = label.capitalize()
-        # Direct register-based call like "call rax"
-        if reg in context:
-            target_addr = context[reg]
-        else:
-            raise ValueError("resolve_label error", code[2], label)
 
-    return target_addr
-
+    return reg, indirect, offset
 
 def deal_with_injection_callback(callback: Callable[[Any], None], save_place: int, event: Any) -> None:
     global is_in_injected_code
@@ -754,7 +775,7 @@ def inject_assembly(process: Any, code: str, return_address: int, code_done_call
     mov eax, 0x0D
     xor ecx, ecx
     cpuid
-    movabs rbx, 0x{register_save_address:016X}
+    movabs rbx, {register_save_address}
     xsave64 [rbx]
     {code}
     """
@@ -773,7 +794,7 @@ def inject_assembly(process: Any, code: str, return_address: int, code_done_call
         external_breakpoints[save_place] = partial(deal_with_injection_callback, code_done_callback, save_place)
 
     assembly2 = f"""
-    movabs rbx, 0x{register_save_address:016X}
+    movabs rbx, {register_save_address}
     xrstor64 [rbx]
     pop r15; pop r14; pop r13; pop r12
     pop r11; pop r10; pop r9;  pop r8
@@ -809,7 +830,7 @@ def run_loadlibrary_in_process(h_process: int, process: Any, dll_path: str) -> N
     load_library_addr = kernel32.resolve("LoadLibraryA")
 
     asm_code_to_run.append((
-        f"sub rsp, 0x20;mov rcx, 0x{name_remote_memory:016X};mov rax, 0x{load_library_addr:016X};call rax;add rsp, 0x20",
+        f"sub rsp, 0x20;mov rcx, {name_remote_memory};mov rax, {load_library_addr};call rax;add rsp, 0x20",
         partial(loaded_dll, dll_path),
     ))
 
