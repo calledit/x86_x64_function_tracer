@@ -247,7 +247,7 @@ def min_hooked_exit_hook(ujump_table_address: int, callback: Callable[[Any], Non
     tid = event.get_tid()
     original_return_address = ret_replacements[tid][ujump_table_address].pop()
     #print("jumping to:", original_return_address, ujump_table_address)
-    event.get_thread().set_pc(original_return_address)
+    #event.get_thread().set_pc(original_return_address)
     callback(event)
     
 def instrument_function(instructions, process, enter_callback):
@@ -393,14 +393,17 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
         f"mov     rcx, {function_addres};"    # first argument 
         f"mov     rax, {call_tracer_dll_func['function_exit_trace_point']};"
         "call    rax;"
+        "mov [r15], rax" #Restore the original return address that was given by function_exit_trace_point
     )
     exit_func_call_code = asm(generate_clean_asm_func_call(exit_asm), jump_table_address)
     
+    final_jump_code = asm("jmp [rsp]", jump_table_address + len(exit_func_call_code))
+    
     jcode = asm(asmm, jump_write_address)
     after_trampoline_jump = jump_write_address + len(jcode)+16
-    jump_code = enter_func_call_code + jcode + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", after_trampoline_jump) + exit_func_call_code + b"\xCC"
+    jump_code = enter_func_call_code + jcode + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", after_trampoline_jump) + exit_func_call_code + b"\xCC" + final_jump_code
     
-    final_breakpoint = len(jump_code)+jump_table_address
+    final_breakpoint = len(jump_code)+jump_table_address - len(final_jump_code)
 
     external_breakpoints[jump_write_address + 2] = partial(min_hooked_entry_hook, jump_table_address, enter_callback)
     
