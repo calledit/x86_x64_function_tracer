@@ -369,12 +369,15 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
     asmm = (
         "int 3;" # triger interupt for tracing purpose and saving original return address
         "push rax;" # save value in rax
-        "mov rax, [RIP + 22];" # fill rax with addres leading to second_interrupt
+        "mov rax, [RIP + 20];" # fill rax with addres leading to code after trampoline jump
         "mov [RSP+0x8], rax;" # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
         "pop rax;" # restore rax 
-        "jmp [RIP + 0x2];" # jump to address_to_trampoline
-        "int 3" # triger interupt for tracing purpose and returning to original location
+        "jmp [RIP];" # jump to address_to_trampoline
+        #"int 3" # triger interupt for tracing purpose and returning to original location
     )
+    
+    
+    
     code = (
         f"mov     rcx, {function_addres};"    # first argument 
         "mov     rdx, r15;"    # second argument return address saved in r15 by generate_clean_asm_func_call
@@ -382,14 +385,28 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
         "call    rax;"
     )
     func_call_asm = generate_clean_asm_func_call(code)
-    func_call_code = asm(func_call_asm, jump_table_address)
-    jump_write_address = jump_table_address + len(func_call_code)
+    enter_func_call_code = asm(func_call_asm, jump_table_address)
+    jump_write_address = jump_table_address + len(enter_func_call_code)
+    
+    
+    code = (
+        f"mov     rcx, {function_addres};"    # first argument 
+        f"mov     rdx, {function_addres};"    # second argument faked return address FIXXMEE REMOVE ARGUMENT 2
+        f"mov     rax, {call_tracer_dll_func['function_exited_trace_point']};"
+        "call    rax;"
+    )
+    func_call_asm = generate_clean_asm_func_call(code)
+    exit_func_call_code = asm(func_call_asm, jump_table_address)
+    
     jcode = asm(asmm, jump_write_address)
-    second_interrupt = jump_write_address + (len(jcode) - 2)
-    jump_code = func_call_code + jcode + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", second_interrupt)
+    after_trampoline_jump = jump_write_address + len(jcode)+16
+    jump_code = enter_func_call_code + jcode + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", after_trampoline_jump) + exit_func_call_code + b"\xCC"
+    
+    final_breakpoint = len(jump_code)+jump_table_address
 
     external_breakpoints[jump_write_address + 2] = partial(min_hooked_entry_hook, jump_table_address, enter_callback)
-    external_breakpoints[second_interrupt + 2] = partial(min_hooked_exit_hook, jump_table_address, exit_callback)
+    
+    external_breakpoints[final_breakpoint] = partial(min_hooked_exit_hook, jump_table_address, exit_callback)
     process.write(jump_table_address, jump_code)
 
 
@@ -568,6 +585,8 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
         with open(disassembled_cache_file, "w") as f:
             json.dump(disassembled_functions, f)
 
+def dud_func():
+    pass
 
 def add_instruction_redirect(
     instruction_address_unused: int,
@@ -599,18 +618,17 @@ def add_instruction_redirect(
 
         insert_len = 0
         jump_type = "none"
+        
+        # Add entry breakpoint in the shellcode
+        new_code = b"\xCC"
+        code.append(new_code)
+        new_instruction_address += len(new_code)
+        break_point_entry = new_instruction_address
 
         # Prefer full 5-byte JMP if possible, otherwise insert 1 byte (int3)
         if instruction_len >= 5:
             insert_len = 5
             jump_type = "normal"
-
-            # Add entry breakpoint in the shellcode
-            new_code = b"\xCC"
-            code.append(new_code)
-            new_instruction_address += len(new_code)
-            break_point_entry = new_instruction_address
-
         elif instruction_len >= 2 and instruction_parts[0] in ("call",):#FIXMEEE whenever minhook moves these breakpoints shit stops working
             insert_len = 1
             jump_type = "call"
@@ -621,15 +639,15 @@ def add_instruction_redirect(
         extra_bytes = max(instruction_len - insert_len, 0)
         jmp_to_shellcode: Optional[bytes] = None
         asmm: Optional[str] = None
-
+        jump_breakpoint = None
         if jump_type == "normal":
             asmm = f"jmp {jump_to_address}" + (";nop" * extra_bytes)
         elif jump_type == "call":
             jmp_to_shellcode = b"\xCC" + (b"\x90" * extra_bytes)
-            break_point_entry = instruction_address + 1
+            jump_breakpoint = instruction_address + 1
         elif jump_type == "1byte":
             jmp_to_shellcode = b"\xCC"
-            break_point_entry = instruction_address + 1
+            jump_breakpoint = instruction_address + 1
 
         is_jump = instruction_asm.startswith("j")
         call_relocate = False
@@ -672,28 +690,31 @@ def add_instruction_redirect(
                 jmp_to_shellcode = asm(asmm, instruction_address)
             print(jump_type,'org:', instruction_asm, "(", instruction_len, ") write:", asmm, "bytes:", len(jmp_to_shellcode), "at:", instruction_address, "jump_to_address:", jump_to_address, "diff:", jump_to_address - instruction_address)
             
+            
+            if jump_breakpoint is not None:
+                assert (jump_breakpoint not in external_breakpoints), "Overwriting old breakpoint"
+                external_breakpoints[jump_breakpoint] = partial(go_jump_breakpoint, jump_to_address, dud_func)
+            
             assert (break_point_entry not in external_breakpoints), "Overwriting old breakpoint"
-            # Register the breakpoint callback
-            if jump_type == "normal":
-                external_breakpoints[break_point_entry] = enter_callback
-            else:
-                external_breakpoints[break_point_entry] = partial(go_jump_breakpoint, jump_to_address, enter_callback)
+            external_breakpoints[break_point_entry] = enter_callback
         else:
             raise ValueError("should never happen")
             return False, break_point_entry
 
-        # If this function depends on the return address, problematicly this does not let us capture the return 
-        if static and False:
+        # If the function we are patching depends on the return address, problematicly this does not let us capture the return.
+        if static and False: #This code path manually sets the return address to the real next instruciton then jumps to the function
             asd = "push rax;push rax;mov rax, [RIP + 12];mov [RSP+0x8], rax;pop rax;jmp [rip + 8];"
             new_code = asm(asd, new_instruction_address)
 
             code.append(new_code)
             new_instruction_address += len(new_code)
             
+            #save the return position
             new_code = struct.pack("<Q", jump_back_address)
             code.append(new_code)
             new_instruction_address += len(new_code)
             
+            #extract and sae the target function that we are trying to call
             target = int(instruction_parts[1], 16)
             new_code = struct.pack("<Q", target)
             code.append(new_code)
