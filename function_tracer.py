@@ -213,7 +213,7 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
     setup_thread_storage(process, True, tid = tid)
 
 
-def min_hooked_entry_hook(ujump_table_address: int, callback: Callable[[Any], None], event: Any) -> None:
+def min_hooked_entry_hook(ujump_table_address: int, function_addres, callback: Callable[[Any], None], event: Any) -> None:
     """
     Breakpoint handler for function entry via MinHook trampoline wrapper.
     I am a bit afraid that this might get called multiple times as code in a function may jump bak to the first instruction.
@@ -234,7 +234,7 @@ def min_hooked_entry_hook(ujump_table_address: int, callback: Callable[[Any], No
     context = thread.get_context()
     stack_pointer = context["Rsp"]
     return_address = read_ptr(process, stack_pointer)
-    print("stack_pointer:", stack_pointer, 'return_address:', return_address)
+    print("function_addres:", function_addres, "stack_pointer:", stack_pointer, 'return_address:', return_address)
     
     #print("saving return address:", return_address, ujump_table_address)
 
@@ -245,7 +245,7 @@ def min_hooked_entry_hook(ujump_table_address: int, callback: Callable[[Any], No
 def min_hooked_exit_hook(ujump_table_address: int, callback: Callable[[Any], None], event: Any) -> None:
     """Breakpoint handler for function exit; returns to original address and calls callback."""
     tid = event.get_tid()
-    original_return_address = ret_replacements[tid][ujump_table_address].pop()
+    original_return_address = ret_replacements[tid][ujump_table_address].pop() 
     #print("jumping to:", original_return_address, ujump_table_address)
     #event.get_thread().set_pc(original_return_address)
     callback(event)
@@ -345,6 +345,7 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
     context = thread.get_context()
     result = context["Rax"]
 
+    use_python_tracing = True
 
     process = event.get_process()
     if result != 0:
@@ -366,8 +367,12 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
     
     # Tracking assembly: adds a breakpoint before and after the real function.
     # Saves the return address, modifies it to point to the post-call int3, then jumps.
+    int3_bef = ""
+    if use_python_tracing:
+        int3_bef = "int 3;"
+    
     asmm = (
-        "int 3;" # triger interupt for tracing purpose and saving original return address
+        int3_bef + # triger interupt for tracing purpose and saving original return address
         "push rax;" # save value in rax
         "mov rax, [RIP + 20];" # fill rax with addres leading to code after trampoline jump
         "mov [RSP+0x8], rax;" # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
@@ -379,9 +384,9 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
     
     
     enter_asm = (
-        f"mov     rcx, {function_addres};"    # first argument 
+        f"movabs rcx, {function_addres};"    # first argument 
         "mov     rdx, r15;"    # second argument return address saved in r15 by generate_clean_asm_func_call
-        f"mov     rax, {call_tracer_dll_func['function_enter_trace_point']};"
+        f"movabs rax, {call_tracer_dll_func['function_enter_trace_point']};"
         "call    rax;"
     )
     
@@ -390,10 +395,10 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
     
     
     exit_asm = (
-        f"mov     rcx, {function_addres};"    # first argument 
-        f"mov     rax, {call_tracer_dll_func['function_exit_trace_point']};"
+        f"movabs rcx, {function_addres};"    # first argument 
+        f"movabs rax, {call_tracer_dll_func['function_exit_trace_point']};"
         "call    rax;"
-        "mov [r15], rax" #Restore the original return address that was given by function_exit_trace_point
+        "mov     [r15], rax" #Restore the original return address that was given by function_exit_trace_point
     )
     exit_func_call_code = asm(generate_clean_asm_func_call(exit_asm), jump_table_address)
     
@@ -401,13 +406,16 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
     
     jcode = asm(asmm, jump_write_address)
     after_trampoline_jump = jump_write_address + len(jcode)+16
-    jump_code = enter_func_call_code + jcode + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", after_trampoline_jump) + exit_func_call_code + b"\xCC" + final_jump_code
+    f_break = b""
+    if use_python_tracing:
+        f_break = b"\xCC"
+    jump_code = enter_func_call_code + jcode + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", after_trampoline_jump) + exit_func_call_code + f_break + final_jump_code
     
     final_breakpoint = len(jump_code)+jump_table_address - len(final_jump_code)
-
-    external_breakpoints[jump_write_address + 2] = partial(min_hooked_entry_hook, jump_table_address, enter_callback)
     
-    external_breakpoints[final_breakpoint] = partial(min_hooked_exit_hook, jump_table_address, exit_callback)
+    if use_python_tracing:
+        external_breakpoints[jump_write_address + 2] = partial(min_hooked_entry_hook, jump_table_address, function_addres, enter_callback)
+        external_breakpoints[final_breakpoint] = partial(min_hooked_exit_hook, jump_table_address, exit_callback)
     process.write(jump_table_address, jump_code)
 
 
@@ -444,13 +452,13 @@ def submit_hook_function_list_for_injection() -> None:
     for target_fn_addr, enter_callback, exit_callback in functions_to_hook:
         print("hook", target_fn_addr, "using:", call_tracer_dll_func["hook_function"]) 
         jump_table_address = shell_code_address + shell_code_address_offset
-        shell_code_address_offset += 800  # ~800 bytes per entry is usually enough
+        shell_code_address_offset += 800  # ~800 bytes per entry is probably enough
 
         asm_code_to_run.append((
-            f"mov rcx, {target_fn_addr};"
-            f"mov rdx, {jump_table_address};"
-            f"mov r8, {shell_code_address};"
-            f"mov rax, {hook_function};"
+            f"movabs rcx, {target_fn_addr};"
+            f"movabs rdx, {jump_table_address};"
+            f"movabs r8, {shell_code_address};"
+            f"movabs rax, {hook_function};"
             "call rax",
             partial(min_hooked_function, target_fn_addr, jump_table_address, enter_callback, exit_callback),
         ))
@@ -459,7 +467,7 @@ def submit_hook_function_list_for_injection() -> None:
     if len(functions_to_hook) != 0:
         print("enable func_location:", enable_function)
         asmm = (
-            f"mov rax, {enable_function};"
+            f"movabs rax, {enable_function};"
             "call rax;"
         )
         asm_code_to_run.append((asmm, min_hook_enabled))
@@ -615,7 +623,7 @@ def create_list_of_functions_to_hook() -> None:
             json.dump(disassembled_functions, f)
 
 
-def dud_func():
+def dud_func(event):
     pass
 
 def add_instruction_redirect(
@@ -623,6 +631,7 @@ def add_instruction_redirect(
     instruction_address_unused: int,
     instructions: List[Tuple[int, int, str, str]],
     process: Any,
+    reg, indirect, offset,
     enter_callback: Callable[[Any], None],
     exit_callback: Callable[[Any], None],
 ) -> Tuple[Optional[int], int]:
@@ -637,6 +646,8 @@ def add_instruction_redirect(
     new_instruction_address = jump_to_address
     break_point_entry = -1
     jump_back_address: Optional[int] = None
+    
+    use_python_tracing = True
 
     if len(instructions) != 0:
         instruction = instructions[0]
@@ -652,25 +663,50 @@ def add_instruction_redirect(
         jump_type = "none"
         
         #function_call_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address, uint64_t target_address)
+        reg_to_use = 'r9'
+        if reg is not None:
+            reg = reg.lower()
+            if reg_to_use == reg:
+                reg_to_use = 'r7'
+        
+        target_resolver = get_target_asm_resolver(reg, indirect, offset, reg_to_use)
+        print(instruction_asm, target_resolver, reg, indirect, offset)
+        #exit()
+        
         call_asm = (
-            f"mov     rcx, {function_address};"    # first argument function_address
-            f"mov     rdx, {instruction_address};"    # second argument call_address
-            f"mov     r8, {instruction_address + instruction_len};"    # third arg return_address
-            f"mov     r9, {function_address};"    # forth arg FIXXXMEEEEE add target address
-            f"mov     rax, {call_tracer_dll_func['function_call_trace_point']};"
+            f"movabs     rcx, {function_address};"    # first argument function_address
+            f"movabs     rdx, {instruction_address};"    # second argument call_address
+            f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
+            f"mov     r9, [r15-8]; " # [r15+8];"    # forth arg target address # original rsp in rax, saved in r15 by generate_clean_asm_func_call
+            f"movabs     rax, {call_tracer_dll_func['function_call_trace_point']};"
             "call    rax;"
         )
+        #print(call_asm)
         
-        call_func_call_code = asm(generate_clean_asm_func_call(call_asm), new_instruction_address)
+        save_target_asm = (#FIXMEE hope to god they dont want to use rsp relative indexing
+            "sub rsp, 8\n" #make space on the stack
+            f"push {reg_to_use} \n" #Save r9
+            "add rsp, 16\n"
+            f"{target_resolver}\n" #fill r9 with target address # {target_resolver}
+            f"mov [rsp-8], {reg_to_use}\n" #save r9 in the space we made on the stack
+            "sub rsp, 16\n"
+            f"pop {reg_to_use} \n" #restore r9
+        )
+        print("target_asm", save_target_asm)
+        #exit()
+        
+        call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm, extra_push = 8) + "\nadd rsp, 8\n", new_instruction_address)
+        #exit()
         
         code.append(call_func_call_code)
         new_instruction_address += len(call_func_call_code)
         
-        # Add entry breakpoint in the shellcode
-        new_code = b"\xCC"
-        code.append(new_code)
-        new_instruction_address += len(new_code)
-        break_point_entry = new_instruction_address
+        if use_python_tracing:
+            # Add entry breakpoint in the shellcode
+            new_code = b"\xCC"
+            code.append(new_code)
+            new_instruction_address += len(new_code)
+            break_point_entry = new_instruction_address
 
         # Prefer full 5-byte JMP if possible, otherwise insert 1 byte (int3)
         if instruction_len >= 5:
@@ -702,13 +738,11 @@ def add_instruction_redirect(
         # RIP-relative handling
         if "rip +" in instruction_asm or "rip -" in instruction_asm:
             print("Accounting for altered RIP", instruction_asm)
-            diff = new_instruction_address - instruction[0]
-            rip_address = instruction_address + instruction_len
-            rip_address = f"{rip_address}"
+            rip_address = str(instruction_address + instruction_len)
             instruction_asm = instruction_asm.replace("rip", rip_address)
         elif "rip" in instruction_asm:
             raise ValueError("If instruction directly uses RIP in a non-relative way we can't move it" + instruction_asm)
-            return False, break_point_entry
+            return False, None
         static = True
         if instruction_parts[0] in ("call", "jmp"):
             # Recompile jmps and calls
@@ -727,10 +761,10 @@ def add_instruction_redirect(
                     call_relocate = True
         elif is_jump:
             print("complex jump will fail", instruction_asm)
-            return False, break_point_entry
+            return False, None
         elif instruction_parts[0] in ("cmp",):
             print("non-movable instruction", instruction_asm)
-            return False, break_point_entry
+            return False, None
 
         if asmm is not None or jmp_to_shellcode is not None:
             if jmp_to_shellcode is None:
@@ -742,11 +776,12 @@ def add_instruction_redirect(
                 assert (jump_breakpoint not in external_breakpoints), "Overwriting old breakpoint"
                 external_breakpoints[jump_breakpoint] = partial(go_jump_breakpoint, jump_to_address, dud_func)
             
-            assert (break_point_entry not in external_breakpoints), "Overwriting old breakpoint"
-            external_breakpoints[break_point_entry] = enter_callback
+            if use_python_tracing:
+                assert (break_point_entry not in external_breakpoints), "Overwriting old breakpoint"
+                external_breakpoints[break_point_entry] = enter_callback
         else:
             raise ValueError("should never happen")
-            return False, break_point_entry
+            return False, None
 
         # If the function we are patching depends on the return address, problematicly this does not let us capture the return.
         if static and False: #This code path manually sets the return address to the real next instruciton then jumps to the function
@@ -775,20 +810,21 @@ def add_instruction_redirect(
             code.append(new_code)
             new_instruction_address += len(new_code)
 
-    # Add exit breakpoint and final jump back to original flow
-    code.append(b"\xCC")
-    new_instruction_address += 1
-    break_point_exit = new_instruction_address
-    assert (break_point_exit not in external_breakpoints), "Overwriting old breakpoint"
-    external_breakpoints[break_point_exit] = exit_callback
+    if use_python_tracing:
+        # Add exit breakpoint and final jump back to original flow
+        code.append(b"\xCC")
+        new_instruction_address += 1
+        break_point_exit = new_instruction_address
+        assert (break_point_exit not in external_breakpoints), "Overwriting old breakpoint"
+        external_breakpoints[break_point_exit] = exit_callback
     
     
     #function_called_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address);
     call_asm = (
-        f"mov     rcx, {function_address};"    # first argument function_address
-        f"mov     rdx, {instruction_address};"    # second argument call_address
-        f"mov     r8, {instruction_address + instruction_len};"    # third arg return_address
-        f"mov     rax, {call_tracer_dll_func['function_called_trace_point']};"
+        f"movabs     rcx, {function_address};"    # first argument function_address
+        f"movabs     rdx, {instruction_address};"    # second argument call_address
+        f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
+        f"movabs     rax, {call_tracer_dll_func['function_called_trace_point']};"
         "call    rax;"
     )
     
@@ -841,6 +877,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
                 instruction_address,
                 replace_instructions,
                 process,
+                reg, indirect, offset,
                 partial(function_call_break_point, function_id, instruction_address, call_num, reg, indirect, offset),
                 partial(function_called_break_point, function_id, instruction_address, call_num),
             )
@@ -979,7 +1016,7 @@ def function_call_break_point(parent_function_id: str, instruction_address: int,
     target_function_id = get_function_id(target_addr)
 
     call_stack.append("call " + target_function_id)
-    print("  " * len(call_stack) + "call: nr_" + str(call_num) + " " + target_function_id + " from " + parent_function_id)
+    print("  " * len(call_stack) + "call: nr_" + str(call_num) + " target: " + target_function_id + " addr: " + str(target_addr) +" from " + parent_function_id)
 
 
 def function_called_break_point(parent_function_id: str, instruction_address: int, call_num: int, event: Any) -> None:
@@ -1031,6 +1068,53 @@ def get_targetaddr(reg, indirect, offset, context, process):
     if indirect:
         target_addr = read_ptr(process, target_addr)
     return target_addr
+    
+def get_target_asm_resolver(reg, indirect, offset, where):
+    """use info to get CALL target with asm."""
+    if reg is not None:
+        reg = reg.lower()
+    where = where.lower()
+    asmcode = ""
+    mov = "mov"
+    if indirect:
+        if reg is None:
+            return f"movabs {where}, {offset}\nmov {where}, [{where}]"
+        else:
+            if reg == where:
+                raise ValueError("adding offset to own registry, not implemented")
+            else:
+                return f"movabs {where}, {offset}\nadd {where}, {reg}\nmov {where}, [{where}]"
+    else:
+        if reg is None:
+            return f"movabs     {where}, {offset}"
+        else:
+            if offset == 0:
+                return f"mov {where}, {reg}"
+            else:
+                if reg == where:
+                    raise ValueError("adding offset to own registry, not implemented")
+                else:
+                    return f"movabs {where}, {offset}\nadd {where}, {reg}"
+       
+    
+    return f"mov {where}, 0"
+    
+    if indirect:
+        asmcode += "[ "
+    target_addr = offset
+    if reg is not None:
+        asmcode += reg.lower()
+        if offset != 0:
+            if offset > 0:
+                asmcode += " + " +str(abs(offset))
+            else:
+                asmcode += " - " +str(abs(offset))
+    else:
+        asmcode += str(offset)
+        
+    if indirect:
+        asmcode += " ]"
+    return asmcode
 
 def asm2regaddr(code: Tuple[int, int, str, str]):
     """parse info needed to get CALL target address from a instruction, given thread context."""
@@ -1116,7 +1200,7 @@ def strip_semicolon_comments(asm: str) -> str:
 
     return ''.join(out_lines)
     
-def generate_clean_asm_func_call(code, in_two_parts = False):
+def generate_clean_asm_func_call(code, in_two_parts = False, extra_push = 0):
     global register_save_address, thread_storage_list_address
     assembly1 = strip_semicolon_comments("""
     ; ===== prologue: preserve flags & callee-saved registers =====
@@ -1127,7 +1211,7 @@ sub   rsp, 8
 
 push r15
 mov r15, rsp
-add r15, 24; save original return_address stack location in r15 fix ofset 24 caused by pushes
+add r15, """+str(24+extra_push)+"""; save original return_address stack location in r15 fix ofset 24 caused by pushes
 push rbp
 push rsi
 push rdi
@@ -1338,7 +1422,7 @@ def run_loadlibrary_in_process(h_process: int, process: Any, dll_path: str) -> N
     load_library_addr = kernel32.resolve("LoadLibraryA")
 
     asm_code_to_run.append((
-        f"mov rcx, {name_remote_memory};mov rax, {load_library_addr};call rax",
+        f"movabs rcx, {name_remote_memory};mov rax, {load_library_addr};call rax",
         partial(loaded_dll, dll_path),
     ))
 
