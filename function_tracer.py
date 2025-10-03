@@ -378,25 +378,23 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
     
     
     
-    code = (
+    enter_asm = (
         f"mov     rcx, {function_addres};"    # first argument 
         "mov     rdx, r15;"    # second argument return address saved in r15 by generate_clean_asm_func_call
         f"mov     rax, {call_tracer_dll_func['function_enter_trace_point']};"
         "call    rax;"
     )
-    func_call_asm = generate_clean_asm_func_call(code)
-    enter_func_call_code = asm(func_call_asm, jump_table_address)
+    
+    enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm), jump_table_address)
     jump_write_address = jump_table_address + len(enter_func_call_code)
     
     
-    code = (
+    exit_asm = (
         f"mov     rcx, {function_addres};"    # first argument 
-        f"mov     rdx, {function_addres};"    # second argument faked return address FIXXMEE REMOVE ARGUMENT 2
-        f"mov     rax, {call_tracer_dll_func['function_exited_trace_point']};"
+        f"mov     rax, {call_tracer_dll_func['function_exit_trace_point']};"
         "call    rax;"
     )
-    func_call_asm = generate_clean_asm_func_call(code)
-    exit_func_call_code = asm(func_call_asm, jump_table_address)
+    exit_func_call_code = asm(generate_clean_asm_func_call(exit_asm), jump_table_address)
     
     jcode = asm(asmm, jump_write_address)
     after_trampoline_jump = jump_write_address + len(jcode)+16
@@ -433,7 +431,7 @@ def start_fun(event: Any) -> None:
     print("start_fun:", context)
 
 
-def hook_functions() -> None:
+def submit_hook_function_list_for_injection() -> None:
     """Queue MinHook setup calls for all functions_to_hook and queue a global enable."""
     global shell_code_address_offset
 
@@ -533,10 +531,51 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
     
     disassembled_cache_file = exe_basic_name + "_instructions_cache.json"
     save_cache = False
+    if len(disassembled_functions) == 0:
+        if os.path.exists(disassembled_cache_file) and time.time() - os.path.getmtime(disassembled_cache_file) < 12 * 3600:
+            with open(disassembled_cache_file, "r") as f:
+                disassembled_functions = json.load(f)
 
-    if os.path.exists(disassembled_cache_file) and time.time() - os.path.getmtime(disassembled_cache_file) < 12 * 3600:
-        with open(disassembled_cache_file, "r") as f:
-            disassembled_functions = json.load(f)
+    for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
+        function_id = get_function_id(function_start_addr)
+        DO_hook = True
+        
+        # Disassemble and patch CALL instructions in the function body
+        if len(disassembled_functions) > pdata_ordinal:
+            instructions = disassembled_functions[pdata_ordinal]
+        else:
+            instcode = process.read(function_start_addr, function_end_addr - function_start_addr)
+            instructions = process.disassemble_string(function_start_addr, instcode)
+            disassembled_functions.append(instructions)
+            save_cache = True
+        
+        #if pdata_ordinal not in(122,):
+        #instrument_function(instructions, process, partial(function_enter_break_point, function_id, function_start_addr))
+        
+        #print("ordinal:", pdata_ordinal)
+        #if pdata_ordinal not in(122,) and pdata_ordinal < 120:
+        insert_break_at_calls(event, pid, instructions, function_id, function_start_addr)
+        
+        #if pdata_ordinal == 168:
+        #    break
+        
+
+    if save_cache:
+        with open(disassembled_cache_file, "w") as f:
+            json.dump(disassembled_functions, f)
+
+
+def create_list_of_functions_to_hook() -> None:
+    """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
+    global disassembled_functions
+    # Cache to avoid repeated disassembly of large binaries
+    
+    disassembled_cache_file = exe_basic_name + "_instructions_cache.json"
+    save_cache = False
+    if len(disassembled_functions) == 0:
+        if os.path.exists(disassembled_cache_file) and time.time() - os.path.getmtime(disassembled_cache_file) < 12 * 3600:
+            with open(disassembled_cache_file, "r") as f:
+                disassembled_functions = json.load(f)
 
     for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
         function_id = get_function_id(function_start_addr)
@@ -568,27 +607,16 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
                 )
             )
 
-        
-        
-        #if pdata_ordinal not in(122,):
-        #instrument_function(instructions, process, partial(function_enter_break_point, function_id, function_start_addr))
-        
-        #print("ordinal:", pdata_ordinal)
-        #if pdata_ordinal not in(122,) and pdata_ordinal < 120:
-        insert_break_at_calls(event, pid, instructions, function_id)
-        
-        #if pdata_ordinal == 168:
-        #    break
-        
-
     if save_cache:
         with open(disassembled_cache_file, "w") as f:
             json.dump(disassembled_functions, f)
+
 
 def dud_func():
     pass
 
 def add_instruction_redirect(
+    function_address: int,
     instruction_address_unused: int,
     instructions: List[Tuple[int, int, str, str]],
     process: Any,
@@ -607,7 +635,8 @@ def add_instruction_redirect(
     break_point_entry = -1
     jump_back_address: Optional[int] = None
 
-    for instruction in instructions:
+    if len(instructions) != 0:
+        instruction = instructions[0]
         instruction_address = instruction[0]
         instruction_len = instruction[1]
         instruction_asm = instruction[2]
@@ -618,6 +647,21 @@ def add_instruction_redirect(
 
         insert_len = 0
         jump_type = "none"
+        
+        #function_call_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address, uint64_t target_address)
+        call_asm = (
+            f"mov     rcx, {function_address};"    # first argument function_address
+            f"mov     rdx, {instruction_address};"    # second argument call_address
+            f"mov     r8, {instruction_address + instruction_len};"    # third arg return_address
+            f"mov     r9, {function_address};"    # forth arg FIXXXMEEEEE add target address
+            f"mov     rax, {call_tracer_dll_func['function_call_trace_point']};"
+            "call    rax;"
+        )
+        
+        call_func_call_code = asm(generate_clean_asm_func_call(call_asm), new_instruction_address)
+        
+        code.append(call_func_call_code)
+        new_instruction_address += len(call_func_call_code)
         
         # Add entry breakpoint in the shellcode
         new_code = b"\xCC"
@@ -727,7 +771,6 @@ def add_instruction_redirect(
             new_code = asm(instruction_asm, new_instruction_address)
             code.append(new_code)
             new_instruction_address += len(new_code)
-        break  # Only relocate the first instruction in list
 
     # Add exit breakpoint and final jump back to original flow
     code.append(b"\xCC")
@@ -735,6 +778,21 @@ def add_instruction_redirect(
     break_point_exit = new_instruction_address
     assert (break_point_exit not in external_breakpoints), "Overwriting old breakpoint"
     external_breakpoints[break_point_exit] = exit_callback
+    
+    
+    #function_called_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address);
+    call_asm = (
+        f"mov     rcx, {function_address};"    # first argument function_address
+        f"mov     rdx, {instruction_address};"    # second argument call_address
+        f"mov     r8, {instruction_address + instruction_len};"    # third arg return_address
+        f"mov     rax, {call_tracer_dll_func['function_called_trace_point']};"
+        "call    rax;"
+    )
+    
+    call_func_called_code = asm(generate_clean_asm_func_call(call_asm), new_instruction_address)
+    
+    code.append(call_func_called_code)
+    new_instruction_address += len(call_func_called_code)
 
     last_jump_asm = f"jmp {jump_back_address}"
     print("last_jump asm:", last_jump_asm)
@@ -758,7 +816,7 @@ def go_jump_breakpoint(jump_to_address: int, callback: Callable[[Any], None], ev
     callback(event)
 
 
-def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str) -> None:
+def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int) -> None:
     """Insert breakpoints at every CALL within a function's instruction list."""
     process = event.get_process()
     
@@ -776,6 +834,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
             #To get the target value to the function_call_break_point() you would need to edit add_instruction_redirect() to take reg, indirect and offset and save/return the target value somehow 
             replace_instructions = [instruction]
             jump_to_address, break_point_entry = add_instruction_redirect(
+                function_address,
                 instruction_address,
                 replace_instructions,
                 process,
@@ -830,8 +889,12 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
             if allocate_and_inject_dll:
                 allocate_mem_and_inject_dll(event, process, pid, tid, exe_entry_address)
                 allocate_and_inject_dll = False
-                hook_calls(process, event, pid)
-                # Now that we have all the instructions, add a breakpoint on the entry point
+                
+                # Hook stuff
+                create_list_of_functions_to_hook()
+                
+                
+                # add a breakpoint on the entry point
                 event.debug.break_at(pid, exe_entry_address, exe_entry)
                 breakpoint_active = True
 
@@ -1299,8 +1362,17 @@ def loaded_dll(dll_name: str, event: Any) -> None:
                         call_tracer_dll_func[name] = virtual_address
                     else:
                         print("No export table found.")
+                        
+                
+                submit_hook_function_list_for_injection()
+                
                 # Hook all functions listed in .pdata
-                hook_functions()
+                #hook_functions(process, event, pid)
+                
+                process = event.get_process()
+                pid = process.get_pid()
+                hook_calls(process, event, pid)
+                
     else:
         print("failed to load injected dll:", dll_name)
         sys.exit()
