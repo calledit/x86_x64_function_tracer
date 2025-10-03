@@ -35,13 +35,13 @@ BOOL APIENTRY DllMain( HMODULE hModule,
 int function_enter_break_point(int inside_function_id) {
 
 }
-int function_exited_break_point(int inside_function_id, int call_num) {
+int function_exit_break_point(int inside_function_id, int call_num) {
 
 }
-int function_ret_break_point(int inside_function_id) {
+int function_call_break_point(int inside_function_id) {
 
 }
-int function_goto_break_point(int inside_function_id, int code, int call_num) {
+int function_called_break_point(int inside_function_id, int code, int call_num) {
 
 }
 

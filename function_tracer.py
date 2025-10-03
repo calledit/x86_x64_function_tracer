@@ -91,6 +91,11 @@ functions_to_hook: List[Tuple[int, Callable[[Any], None], Callable[[Any], None]]
 ks = Ks(KS_ARCH_X86, KS_MODE_64)
 
 
+#Thread Storage
+thread_storage_list_address = None
+thread_storage_list_addresses = {}
+
+
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -117,9 +122,9 @@ def start_or_attach_debugger(argv: List[str]) -> None:
         # If there was no running instance of the executable, start it
         if pid is None:
             print("start:", argv)
-            debug_obj.execv(argv)
+            debug_obj.execv(argv, bBreakOnEntryPoint = False)
         else:
-            debug_obj.attach(pid)
+            debug_obj.attach(pid, bBreakOnEntryPoint = False)
 
         # Debug loop
         debug_obj.loop()
@@ -147,7 +152,7 @@ def read_ptr(process: Any, address: int) -> int:
     return struct.unpack("<Q", data)[0]
 
 
-def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, address_close_to_code: int) -> None:
+def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, address_close_to_code: int) -> None:
     """Allocate remote memory regions and inject the helper DLL."""
     global register_save_address, code_injection_address, shell_code_address
 
@@ -197,14 +202,15 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, address_clos
     if not code_injection_address:
         print(f"Failed to allocate code_injection_address in target process: {ctypes.WinError()}")
         sys.exit(0)
+    
 
     # Inject helper DLL with MinHook-based hooks
     run_loadlibrary_in_process(process_handle, process, "calltracer.dll")
-
-    # Now that we have all the instructions, add a breakpoint on the entry point
-    event.debug.break_at(pid, exe_entry_address, exe_entry)
+    
 
     process.close_handle()
+    
+    setup_thread_storage(process, True, tid = tid)
 
 
 def min_hooked_entry_hook(ujump_table_address: int, callback: Callable[[Any], None], event: Any) -> None:
@@ -228,6 +234,7 @@ def min_hooked_entry_hook(ujump_table_address: int, callback: Callable[[Any], No
     context = thread.get_context()
     stack_pointer = context["Rsp"]
     return_address = read_ptr(process, stack_pointer)
+    print("stack_pointer:", stack_pointer, 'return_address:', return_address)
     
     #print("saving return address:", return_address, ujump_table_address)
 
@@ -242,7 +249,95 @@ def min_hooked_exit_hook(ujump_table_address: int, callback: Callable[[Any], Non
     #print("jumping to:", original_return_address, ujump_table_address)
     event.get_thread().set_pc(original_return_address)
     callback(event)
+    
+def instrument_function(instructions, process, enter_callback):
+    """Takes list of instrucitons for a fuction and hooks the function"""
+    assert (len(instructions) != 0), "function cant be zero instructions long"
+    function_addres = instructions[0][0]
+    #print(instructions)
+    clean_instructions(instructions, process, enter_callback)
+    #exit(0)
 
+def clean_instructions(instructions, process, enter_callback):
+    global shell_code_address_offset, shell_code_address
+
+    clean_code = []
+    function_addres = instructions[0][0]
+    function_id = get_function_id(function_addres)
+    print("instrumenting:", function_id)
+    new_location = shell_code_address + shell_code_address_offset
+    new_instruction_address = new_location
+    free_space = 0
+    jump_asm = False
+    
+    #Add entry tracing
+    clean = asm(f"int3", new_instruction_address)
+    clean_code.append(clean)
+    new_instruction_address += len(clean)
+    external_breakpoints[new_location+1] = enter_callback
+    
+    for instruction in instructions:
+        instruction_address = instruction[0]
+        instruction_len = instruction[1]
+        instruction_asm = instruction[2]
+        instruction_parts = instruction_asm.split(" ")
+        
+        
+        
+        free_space += instruction_len
+        
+        #If a insctruction is int3 we cant move it cause other stuff may use it
+        if instruction_asm == "int3":
+            print("int3 already at address:", instruction_address)
+            return
+
+        # RIP-relative handling
+        if "rip +" in instruction_asm or "rip -" in instruction_asm:
+            print("Accounting for altered RIP", instruction_asm)
+            diff = new_instruction_address - instruction[0]
+            rip_address = instruction_address + instruction_len
+            rip_address = f"{rip_address}"
+            instruction_asm = instruction_asm.replace("rip", rip_address)
+        
+        clean = asm(instruction_asm, new_instruction_address)
+        print('old:', instruction[2], 'new:', instruction_asm)
+        clean_code.append(clean)
+        new_instruction_address += len(clean)
+        
+        if free_space >= 5:
+            extra_bytes = max(free_space - 5, 0)#jmp is 5 bytes long
+            jump_asm = f"jmp {new_location}" + (";nop" * extra_bytes)
+            break
+    
+    
+    #Add jumping back to shell code
+    jump_back_address = function_addres + free_space
+    clean = asm(f"jmp {jump_back_address}", new_instruction_address)
+    clean_code.append(clean)
+    new_instruction_address += len(clean)
+    
+    shellcode = b"".join(clean_code)
+    shell_len = len(shellcode)
+    
+    shell_code_address_offset += shell_len + 20
+    #print(shell_code_address_offset)
+    
+    process.write(new_location, shellcode)
+    
+    #if the cleaing managed to get enogh bytes
+    if jump_asm:
+        print(jump_asm)
+        jmp_to_shellcode = asm(jump_asm, function_addres)
+        print('jump len:', free_space, len(jmp_to_shellcode))
+    else:#else we use a breakpoint jump, we skip the first tracing breakpoint if we use this method
+        external_breakpoints[function_addres+1] = partial(go_jump_breakpoint, new_location+1, enter_callback)
+        extra_bytes = max(free_space - 1, 0)#0xCC is 1 bytes long
+        jmp_to_shellcode = b"\xCC" + (b"\x90" * extra_bytes)
+    
+    process.write(function_addres, jmp_to_shellcode)
+    print("wrote stuff")
+    
+        
 
 def min_hooked_function(function_addres: int, jump_table_address: int, enter_callback: Callable[[Any], None], exit_callback: Callable[[Any], None], event: Any) -> None:
     """Executed after MinHook finishes hooking a function."""
@@ -250,37 +345,50 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
     context = thread.get_context()
     result = context["Rax"]
 
+
+    process = event.get_process()
     if result != 0:
-        print("failed to hook function:", function_addres, result)
+        print("failed to hook function", get_function_id(function_addres), result, "using internal hook function")
         pdata_by_start = {
             start: (end, unwind, ordinal)
             for start, end, unwind, ordinal in pdata_functions
         }
         end, unwind, ordinal = pdata_by_start[function_addres]
-        print(disassembled_functions[ordinal])
-        
-        sys.exit()
+        instrument_function(disassembled_functions[ordinal], process, enter_callback)
+        return
 
-    process = event.get_process()
+
+    
     address_to_trampoline = process.read(shell_code_address, 8)
     address_to_trampoline = struct.unpack("<Q", address_to_trampoline)[0]
     print("min_hooked_function:", result, "addr:", address_to_trampoline)
 
-    second_interrupt = jump_table_address + (24 - 2)
+    
     # Tracking assembly: adds a breakpoint before and after the real function.
     # Saves the return address, modifies it to point to the post-call int3, then jumps.
     asmm = (
-        "int 3;" # triger interupt for tracing purpose
+        "int 3;" # triger interupt for tracing purpose and saving original return address
         "push rax;" # save value in rax
         "mov rax, [RIP + 22];" # fill rax with addres leading to second_interrupt
-        "mov [RSP+0x8], rax;" # move the value in rax in to the stack (saving it as a return address)
+        "mov [RSP+0x8], rax;" # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
         "pop rax;" # restore rax 
         "jmp [RIP + 0x2];" # jump to address_to_trampoline
-        "int 3" # triger interupt for tracing purpose
+        "int 3" # triger interupt for tracing purpose and returning to original location
     )
-    jump_code = asm(asmm, jump_table_address) + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", second_interrupt)
+    code = (
+        f"mov     rcx, {function_addres};"    # first argument 
+        "mov     rdx, r15;"    # second argument return address saved in r15 by generate_clean_asm_func_call
+        f"mov     rax, {call_tracer_dll_func['function_enter_trace_point']};"
+        "call    rax;"
+    )
+    func_call_asm = generate_clean_asm_func_call(code)
+    func_call_code = asm(func_call_asm, jump_table_address)
+    jump_write_address = jump_table_address + len(func_call_code)
+    jcode = asm(asmm, jump_write_address)
+    second_interrupt = jump_write_address + (len(jcode) - 2)
+    jump_code = func_call_code + jcode + struct.pack("<Q", address_to_trampoline) + struct.pack("<Q", second_interrupt)
 
-    external_breakpoints[jump_table_address + 2] = partial(min_hooked_entry_hook, jump_table_address, enter_callback)
+    external_breakpoints[jump_write_address + 2] = partial(min_hooked_entry_hook, jump_table_address, enter_callback)
     external_breakpoints[second_interrupt + 2] = partial(min_hooked_exit_hook, jump_table_address, exit_callback)
     process.write(jump_table_address, jump_code)
 
@@ -290,6 +398,22 @@ def min_hook_enabled(event: Any) -> None:
     context = thread.get_context()
     result = context["Rax"]
     print("min_hook_enabled:", result)
+    
+    
+def ran_fun(event: Any) -> None:
+    global is_in_injected_code
+    thread = event.get_thread()
+    context = thread.get_context()
+    result = context["Rax"]
+    print("ran_func:", context)
+    is_in_injected_code = False
+    #exit()
+    
+def start_fun(event: Any) -> None:
+    thread = event.get_thread()
+    context = thread.get_context()
+    result = context["Rax"]
+    print("start_fun:", context)
 
 
 def hook_functions() -> None:
@@ -302,7 +426,7 @@ def hook_functions() -> None:
     for target_fn_addr, enter_callback, exit_callback in functions_to_hook:
         print("hook", target_fn_addr, "using:", call_tracer_dll_func["hook_function"]) 
         jump_table_address = shell_code_address + shell_code_address_offset
-        shell_code_address_offset += 50  # ~50 bytes per entry is usually enough
+        shell_code_address_offset += 800  # ~800 bytes per entry is usually enough
 
         asm_code_to_run.append((
             f"mov rcx, {target_fn_addr};"
@@ -317,24 +441,33 @@ def hook_functions() -> None:
     if len(functions_to_hook) != 0:
         print("enable func_location:", enable_function)
         asmm = (
-            "mov r11, rsp;"
-            # Stack alignment considerations omitted per original code
             f"mov rax, {enable_function};"
             "call rax;"
-            "mov rsp, r11;"
         )
         asm_code_to_run.append((asmm, min_hook_enabled))
 
 
+breakpoint_active = False
 def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: int) -> bool:
     """Handle breakpoint and injection state machine."""
-    global in_loading_phase, is_in_injected_code
+    global in_loading_phase, is_in_injected_code, breakpoint_active
 
+    #print("deal_with_breakpoint:", address, address == exe_entry_address)
+    
+    known_ = False
+    if address in external_breakpoints:
+        callb = external_breakpoints[address]
+        known_ = True
+    
     inject_ok = False
     if address in external_breakpoints or (in_loading_phase and address == exe_entry_address):
         inject_ok = True
+        
+        
+    #print("inject_ok:", inject_ok, "known:", known_, "is_in_injected_code:", is_in_injected_code, 'in_loading_phase:', in_loading_phase, 'len:', len(asm_code_to_run))
 
     if len(asm_code_to_run) != 0 and not is_in_injected_code and inject_ok:
+        print("jumping to injected code", len(asm_code_to_run))
         asmd, code_done_callback = asm_code_to_run.pop(0)
         break_point_location = address
 
@@ -346,22 +479,29 @@ def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: 
         is_in_injected_code = True
 
         # Disable entry breakpoint so it isn't copied while running MinHook
+        breakpoint_active = False
         event.debug.dont_break_at(pid, exe_entry_address)
         event.get_thread().set_pc(code_address)
         return True
+    
+    before = is_in_injected_code
+    if address in external_breakpoints:
+        callb(event)
 
-    if in_loading_phase and is_in_injected_code:
+    if in_loading_phase and not is_in_injected_code and before and not breakpoint_active:
+        print("Re-enable breakpoint so it triggers next time", len(asm_code_to_run))
         # Re-enable breakpoint so it triggers next time
         event.debug.break_at(pid, exe_entry_address)
+        breakpoint_active = True
 
     if len(asm_code_to_run) == 0 and in_loading_phase and not is_in_injected_code and inject_ok:
         print("Loading phase done; disabling entry breakpoint")
+        #if address != exe_entry_address:#You cant remove  breakpoint you are currently on
         event.debug.dont_break_at(pid, exe_entry_address)
+        breakpoint_active = False
         in_loading_phase = False
 
-    if address in external_breakpoints:
-        callb = external_breakpoints[address]
-        callb(event)
+    if known_:
         return True
     else:
         print("unknown break_point called", tid, address)
@@ -383,17 +523,8 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
 
     for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
         function_id = get_function_id(function_start_addr)
-
-        # Queue MinHook entry/exit wrapping for this function
-        if False:
-            functions_to_hook.append(
-                (
-                    function_start_addr,
-                    partial(function_enter_break_point, function_id, function_start_addr),
-                    partial(function_exit_break_point, function_id, function_start_addr),
-                )
-            )
-
+        DO_hook = True
+        
         # Disassemble and patch CALL instructions in the function body
         if len(disassembled_functions) > pdata_ordinal:
             instructions = disassembled_functions[pdata_ordinal]
@@ -402,12 +533,35 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
             instructions = process.disassemble_string(function_start_addr, instcode)
             disassembled_functions.append(instructions)
             save_cache = True
-        print("ordinal:", pdata_ordinal)
-        if pdata_ordinal not in(122,):
-            insert_break_at_calls(event, pid, instructions, function_id)
         
-        if pdata_ordinal == 124:
-            break
+        first_instruction = instructions[0][2]
+        #VLC Does not like it when you move breakpoints
+        if first_instruction in ('int3', 'ret'):
+            #print("yes", instructions[0][2])
+            DO_hook = False
+            #exit()
+        
+        # Queue MinHook entry/exit wrapping for this function
+        if DO_hook:
+            functions_to_hook.append(
+                (
+                    function_start_addr,
+                    partial(function_enter_break_point, function_id, function_start_addr),
+                    partial(function_exit_break_point, function_id, function_start_addr),
+                )
+            )
+
+        
+        
+        #if pdata_ordinal not in(122,):
+        #instrument_function(instructions, process, partial(function_enter_break_point, function_id, function_start_addr))
+        
+        #print("ordinal:", pdata_ordinal)
+        #if pdata_ordinal not in(122,) and pdata_ordinal < 120:
+        insert_break_at_calls(event, pid, instructions, function_id)
+        
+        #if pdata_ordinal == 168:
+        #    break
         
 
     if save_cache:
@@ -518,6 +672,7 @@ def add_instruction_redirect(
                 jmp_to_shellcode = asm(asmm, instruction_address)
             print(jump_type,'org:', instruction_asm, "(", instruction_len, ") write:", asmm, "bytes:", len(jmp_to_shellcode), "at:", instruction_address, "jump_to_address:", jump_to_address, "diff:", jump_to_address - instruction_address)
             
+            assert (break_point_entry not in external_breakpoints), "Overwriting old breakpoint"
             # Register the breakpoint callback
             if jump_type == "normal":
                 external_breakpoints[break_point_entry] = enter_callback
@@ -557,6 +712,7 @@ def add_instruction_redirect(
     code.append(b"\xCC")
     new_instruction_address += 1
     break_point_exit = new_instruction_address
+    assert (break_point_exit not in external_breakpoints), "Overwriting old breakpoint"
     external_breakpoints[break_point_exit] = exit_callback
 
     last_jump_asm = f"jmp {jump_back_address}"
@@ -615,7 +771,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
 
 def on_debug_event(event: Any, reduce_address: bool = False) -> None:
     """Main WinAppDbg event callback."""
-    global exe_basic_name, loaded_modules, exe_entry_address, allocate_and_inject_dll
+    global exe_basic_name, loaded_modules, exe_entry_address, allocate_and_inject_dll, breakpoint_active
 
     pid = event.get_pid()
     tid = event.get_tid()
@@ -651,9 +807,12 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
 
         if basic_name == "kernel32":
             if allocate_and_inject_dll:
-                allocate_mem_and_inject_dll(event, process, pid, exe_entry_address)
+                allocate_mem_and_inject_dll(event, process, pid, tid, exe_entry_address)
                 allocate_and_inject_dll = False
                 hook_calls(process, event, pid)
+                # Now that we have all the instructions, add a breakpoint on the entry point
+                event.debug.break_at(pid, exe_entry_address, exe_entry)
+                breakpoint_active = True
 
     if name == "Process creation event":
         filename = event.get_filename()
@@ -668,7 +827,38 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
             process.scan_modules()
         except Exception:
             pass
+        setup_thread_storage(process, tid = tid)
 
+def setup_thread_storage(process, Alocator_setup = False, tid = -99):
+    global thread_storage_list_address
+    
+    process_handle = process.get_handle()
+    if thread_storage_list_address is None:
+        if Alocator_setup:
+            print("allocate_thread mem", tid)
+            thread_storage_list_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 100000, 0x3000, 0x04)
+            if not thread_storage_list_address:
+                raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
+        else:
+            print("alocator my not have been setup yet", tid)
+            pass
+            
+    if thread_storage_list_address is not None and tid not in thread_storage_list_addresses:
+        
+        thread_storage_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 20000, 0x3000, 0x04)
+        print("setup storage for new thread", tid, thread_storage_address)
+        if not thread_storage_address:
+            raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
+        new_offeset = len(thread_storage_list_addresses) * (8 + 4)
+        address_to_list_position = thread_storage_list_address + new_offeset
+        
+        list_entry = struct.pack("<I", tid) + struct.pack("<Q", thread_storage_address)
+        
+        process.write(address_to_list_position, list_entry)
+        
+        thread_storage_list_addresses[tid] = thread_storage_address
+    
+    process.close_handle()
 
 # -----------------------------
 # Trace printing callbacks
@@ -799,58 +989,245 @@ def deal_with_injection_callback(callback: Callable[[Any], None], save_place: in
     callback(event)
     is_in_injected_code = False
 
+def deal_with_injection_callback_debug(callback: Callable[[Any], None], save_place: int, event: Any) -> None:
+    global is_in_injected_code
+    del external_breakpoints[save_place]
+    callback(event)
+    start_fun(event)
+        
+
+def strip_semicolon_comments(asm: str) -> str:
+    """
+    Remove everything from the first ';' to the end of the line for each line in `asm`.
+    Preserves original line endings and leading indentation, trims trailing whitespace.
+    """
+    out_lines = []
+    for line in asm.splitlines(True):  # keep line endings
+        # find position of ';' before any newline characters
+        # handle lines that may end with '\r\n' or '\n'
+        if line.endswith('\r\n'):
+            eol = '\r\n'
+            body = line[:-2]
+        elif line.endswith('\n'):
+            eol = '\n'
+            body = line[:-1]
+        elif line.endswith('\r'):
+            eol = '\r'
+            body = line[:-1]
+        else:
+            eol = ''
+            body = line
+
+        idx = body.find(';')
+        if idx != -1:
+            body = body[:idx]
+
+        # strip trailing whitespace from the kept part (but keep leading whitespace)
+        body = body.rstrip()
+
+        out_lines.append(body + eol)
+
+    return ''.join(out_lines)
+    
+def generate_clean_asm_func_call(code, in_two_parts = False):
+    global register_save_address, thread_storage_list_address
+    assembly1 = strip_semicolon_comments("""
+    ; ===== prologue: preserve flags & callee-saved registers =====
+pushfq
+sub   rsp, 8
+
+; save callee-saved GPRs that we will use or clobber
+
+push r15
+mov r15, rsp
+add r15, 24; save original return_address stack location in r15 fix ofset 24 caused by pushes
+push rbp
+push rsi
+push rdi
+push rax
+push rcx
+push rdx
+push r8
+push r9
+push r10          ; r10 used as temp for alignment
+push r11          ; r11 used for size/temp
+push r12
+push r13
+push r14
+push rbx
+
+
+
+; Find thread storage from list
+
+.find_current_thread_location:
+    ; load current thread id (low 32 bits of GS:[0x48])
+    mov     eax, dword ptr gs:[0x48]    ; EAX = current TID
+
+    ; base pointer to the array
+    movabs  rsi, """+str(thread_storage_list_address)+"""           ; RSI = array base
+
+.loop:
+    mov     edx, dword ptr [rsi]        ; EDX = entry.thread_id
+    mov     rcx, qword ptr [rsi + 4]    ; RCX = entry.memory_location
+
+    test    rcx, rcx
+    je      .not_found                  ; if memory_location == 0,  end-of-list
+
+    cmp     edx, eax
+    je      .found                      ; match: return memory_location in RAX
+
+    add     rsi, 12                     ; advance to next entry (12 bytes)
+    jmp     .loop
+
+    
+.not_found:
+    nop
+
+.found:
+    mov     rax, rcx                    ; return matching memory_location
+
+
+
+
+
+mov r12, rax
+
+
+; set mask: XCR0 -> EDX:EAX, ECX must be 0
+xor  ecx, ecx
+xgetbv
+
+; save extended state; DO NOT use rdx as the memory base (EDX is mask upper)
+xsave64 [r12]            ; (use xsaveopt if you detect support)
+xor  ecx, ecx
+
+
+; ===== prepare for making the actual code =====
+; We must ensure RSP is 16-byte aligned at the CALL instruction and have 32 bytes shadow.
+
+; Compute the adjustment needed to align RSP to 16 bytes:
+; r10 currently saved on stack; we'll use r10 as temp for alignment value
+; r11 currently holds alloc_size but we won't clobber it; use rax/rcx temporarily
+mov  rax, rsp
+and  rax, 15          ; rax = rsp % 16
+xor  r10, r10         ; r10 = 0 (will store correction amount if any)
+test rax, rax
+je   .no_align_needed
+mov  r10, 16
+sub  r10, rax         ; r10 = (16 - (rsp & 15))
+sub  rsp, r10         ; adjust stack to align to 16
+.no_align_needed:
+push r10
+push r10
+push r11
+push r12
+
+; Now allocate the 32-byte shadow space required by Windows x64 ABI
+sub  rsp, 32
+    """) + code.replace(";", "\n") +"\n"
+    assembly2 = strip_semicolon_comments("""
+    ; ===== after call: pop shadow and undo alignment correction =====
+add  rsp, 32
+
+pop r12
+pop r11
+pop r10
+pop r10
+test r10, r10
+je   .no_align_restore
+add  rsp, r10
+.no_align_restore:
+
+; ===== restore extended state =====
+xor  ecx, ecx
+xgetbv
+xrstor64 [r12]        ; restore extended state from stack buffer
+
+
+; ===== restore saved registers in reverse order =====
+
+pop  rbx
+pop  r14
+pop  r13
+pop  r12
+pop  r11
+pop  r10
+pop  r9
+pop  r8
+pop  rdx
+pop  rcx
+pop  rax
+pop  rdi
+pop  rsi
+pop  rbp
+pop  r15
+
+
+add  rsp, 8
+popfq
+
+""")
+    if in_two_parts:
+        return assembly1, assembly2
+    return assembly1 + assembly2
 
 def inject_assembly(process: Any, code: str, return_address: int, code_done_callback: Optional[Callable[[Any], None]] = None) -> int:
     """Inject assembly that saves/restores full register state, executes `code`, then returns.
 
     The injected block ends with an int3 so we can flip the is_in_injected_code flag.
+    
     """
-    if register_save_address is None or code_injection_address is None:
-        raise RuntimeError("Injection regions not allocated.")
+    
+    dbg = True
+    
+    if code_injection_address is None:
+        raise RuntimeError("Injection region not allocated.")
 
     save_place = code_injection_address
-    assembly1 = f"""
-    pushfq
-    sub   rsp, 8
-    push rax; push rcx; push rdx; push rbx
-    push rbp; push rsi; push rdi
-    push r8;  push r9;  push r10; push r11
-    push r12; push r13; push r14; push r15
-    mov eax, 0x0D
-    xor ecx, ecx
-    cpuid
-    movabs rbx, {register_save_address}
-    xsave64 [rbx]
-    {code}
-    """
+    assembly1, assembly2 = generate_clean_asm_func_call(code, in_two_parts = True )
+    
 
     if code_done_callback is not None:
-        assembly1 += ";int 3;"
+        if dbg:
+            #pass
+            assembly1 = "nop\nint3\n"+assembly1
+            external_breakpoints[save_place+2] = start_fun
+            #assembly1 += "int3\n"
+        assembly1 += "int3"
     else:
         sys.exit(
             "Not implemented: you need to specify a callback so we can know when we're out of the injected code."
         )
-
+        
     shellcode1 = asm(assembly1, save_place)
-
+    #print("asm1", assembly1, process.disassemble_string(save_place, shellcode1), shellcode1)
+    
     save_place += len(shellcode1)
     if code_done_callback is not None:
-        external_breakpoints[save_place] = partial(deal_with_injection_callback, code_done_callback, save_place)
-
-    assembly2 = f"""
-    movabs rbx, {register_save_address}
-    xrstor64 [rbx]
-    pop r15; pop r14; pop r13; pop r12
-    pop r11; pop r10; pop r9;  pop r8
-    pop rdi; pop rsi; pop rbp; pop rbx
-    pop rdx; pop rcx; pop rax
-    add   rsp, 8
-    popfq
-    jmp [RIP]
-    """
-    shellcode2 = asm(assembly2, save_place) + struct.pack("<Q", return_address)
+        if dbg:
+            external_breakpoints[save_place] = partial(deal_with_injection_callback_debug, code_done_callback, save_place)
+        else:
+            external_breakpoints[save_place] = partial(deal_with_injection_callback, code_done_callback, save_place)
+    if dbg:
+        assembly2 += """
+        int3
+        nop
+        jmp [RIP]
+        """
+    else:
+        assembly2 += """
+        jmp [RIP]
+        """
+    shellcode2 = asm(assembly2, save_place)
+    #print("asm2", assembly2, process.disassemble_string(save_place, shellcode2), shellcode2)
+    if dbg:
+        external_breakpoints[save_place+len(shellcode2)-7] = ran_fun
+    
+    shellcode2 += struct.pack("<Q", return_address)
 
     shellcode = shellcode1 + shellcode2
+    
     process.write(code_injection_address, shellcode)
     return code_injection_address
 
@@ -874,7 +1251,7 @@ def run_loadlibrary_in_process(h_process: int, process: Any, dll_path: str) -> N
     load_library_addr = kernel32.resolve("LoadLibraryA")
 
     asm_code_to_run.append((
-        f"sub rsp, 0x20;mov rcx, {name_remote_memory};mov rax, {load_library_addr};call rax;add rsp, 0x20",
+        f"mov rcx, {name_remote_memory};mov rax, {load_library_addr};call rax",
         partial(loaded_dll, dll_path),
     ))
 
