@@ -345,7 +345,7 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
     context = thread.get_context()
     result = context["Rax"]
 
-    use_python_tracing = True
+    use_python_tracing = False
 
     process = event.get_process()
     if result != 0:
@@ -576,7 +576,7 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
             json.dump(disassembled_functions, f)
 
 
-def create_list_of_functions_to_hook() -> None:
+def create_list_of_functions_to_hook(process) -> None:
     """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
     global disassembled_functions
     # Cache to avoid repeated disassembly of large binaries
@@ -647,7 +647,7 @@ def add_instruction_redirect(
     break_point_entry = -1
     jump_back_address: Optional[int] = None
     
-    use_python_tracing = True
+    use_python_tracing = False
 
     if len(instructions) != 0:
         instruction = instructions[0]
@@ -931,7 +931,7 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
                 allocate_and_inject_dll = False
                 
                 # Hook stuff
-                create_list_of_functions_to_hook()
+                create_list_of_functions_to_hook(process)
                 
                 
                 # add a breakpoint on the entry point
