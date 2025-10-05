@@ -48,6 +48,7 @@ BOOL APIENTRY DllMain(HMODULE hModule,
         break;
     case DLL_THREAD_ATTACH:
     case DLL_THREAD_DETACH:
+		break;
     case DLL_PROCESS_DETACH:
         bufer_2_file();
         break;
@@ -170,11 +171,20 @@ void enable_hooks() {
 }
 
 void init() {
-    if (MH_Initialize() != MH_OK) {
-        print("Failed to initialize MinHook");
-        return;
+	FILE* fp;
+	
+	fopen_s(&fp, "C:\\dbg\\debug_output.txt", "w");
+    if (fp) {
+        fputs("", fp);
+        fclose(fp);
     }
-    //print("Initialized MinHook");
+	
+    if (MH_Initialize() != MH_OK) {
+        print("ERROR: Failed to initialize MinHook");
+    }else{
+		print("calltrace_loaded:");
+	}
+    bufer_2_file();
 }
 
 
