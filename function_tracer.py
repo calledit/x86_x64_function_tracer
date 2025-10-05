@@ -797,7 +797,7 @@ def add_instruction_redirect(
 
         jump_distance = abs(instruction_address-jump_to_address)
         # Prefer full 5-byte JMP if possible, otherwise insert 1 byte (int3)
-        if instruction_len >= 5 and False:
+        if instruction_len >= 5:
             if jump_distance > 2147483647:
                 closer_alocation = allocate_close(process, instruction_address)
                 jump_distance2 = abs(instruction_address-closer_alocation)
