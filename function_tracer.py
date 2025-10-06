@@ -627,6 +627,8 @@ def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: 
         return True
     else:
         print("unknown break_point called", tid, address)
+        debug_reg_dump_break(event)
+
 
     return False
 
@@ -660,12 +662,12 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
         
         #instrument_function(instructions, process, partial(function_enter_break_point, function_id, function_start_addr))
         
-        #if pdata_ordinal not in(122,):
+        
         #update altered instructions
         instcode = process.read(function_start_addr, function_end_addr - function_start_addr)
         instructions = process.disassemble_string(function_start_addr, instcode)
-        
-        insert_break_at_calls(event, pid, instructions, function_id, function_start_addr)
+
+        insert_break_at_calls(event, pid, instructions, function_id, function_start_addr, True)
         
         
         #print("ordinal:", pdata_ordinal)
@@ -734,6 +736,13 @@ def create_list_of_functions_to_hook(process) -> None:
 
 def dud_func(event):
     pass
+
+def debug_reg_dump_break(event: Any) -> None:
+
+    thread = event.get_thread()
+    context = thread.get_context()
+    print("DEBUG:", context)
+
 
 def add_instruction_redirect(
     function_address: int,
@@ -831,7 +840,8 @@ def add_instruction_redirect(
         
         enter_asm = (
             f"movabs rcx, {function_address};"    # first argument 
-            "mov     rdx, r15;"    # second argument return address saved in r15 by generate_clean_asm_func_call
+            "mov     rdx, r15;"    # second argument, pointer to the return address saved in r15 by generate_clean_asm_func_call
+            "mov     r8, [r15];"   # third argument, the actual return address
             f"movabs rax, {call_tracer_dll_func['function_enter_trace_point']};"
             "call    rax;"
         )
@@ -847,10 +857,9 @@ def add_instruction_redirect(
             int3_bef + # triger interupt for tracing purpose and saving original return address
             "push rax;" # save value in rax
             "mov rax, [RIP + 20];" # fill rax with addres leading to new_function_return_address
-            "mov [RSP+0x8], rax;" # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
+            "mov [RSP+8], rax;" # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
             "pop rax;" # restore rax 
             "jmp [RIP];" # jump to new_function_start_address
-            #"int 3" # triger interupt for tracing purpose and returning to original location
         )
         
         function_caller = asm(function_caller_asm, jump_write_address)
@@ -862,7 +871,7 @@ def add_instruction_redirect(
             "call    rax;"
             "mov     [r15], rax;" #Restore the original return address that was given by function_exit_trace_point r15 is a pointer to the top of the stack ie what rsp was at the entry of the fuction
         )
-        exit_func_call_code = asm("sub rsp, 8;"+generate_clean_asm_func_call(exit_asm), jump_table_address)
+        exit_func_call_code = asm("lea rsp, [rsp-8];"+generate_clean_asm_func_call(exit_asm), jump_table_address)
         
         final_jump_code = asm("ret", jump_table_address + len(exit_func_call_code))
         
@@ -933,6 +942,17 @@ def add_instruction_redirect(
             print(instruction_asm, target_resolver, reg, reg2, reg2_mult, indirect, offset, reg_to_use, new_instruction_address)
             #exit()
             
+            
+            save_target_asm = (
+                "lea rsp, [rsp-8]\n" #make space on the stack #cant use sub or add as that alters flags
+                f"push {reg_to_use} \n" #Save r9
+                "lea rsp, [rsp+16]\n"
+                f"{target_resolver}\n" #fill r9 with target address # {target_resolver}
+                f"mov [rsp-8], {reg_to_use}\n" #save r9 in the space we made on the stack
+                "lea rsp, [rsp-16]\n"
+                f"pop {reg_to_use}\n" #restore r9
+            )
+            
             call_asm = (
                 f"movabs     rcx, {function_address};"    # first argument function_address
                 f"movabs     rdx, {instruction_address};"    # second argument call_address
@@ -943,18 +963,10 @@ def add_instruction_redirect(
             )
             #print(call_asm)
             
-            save_target_asm = (
-                "sub rsp, 8\n" #make space on the stack
-                f"push {reg_to_use} \n" #Save r9
-                "add rsp, 16\n"
-                f"{target_resolver}\n" #fill r9 with target address # {target_resolver}
-                f"mov [rsp-8], {reg_to_use}\n" #save r9 in the space we made on the stack
-                "sub rsp, 16\n"
-                f"pop {reg_to_use}\n" #restore r9
-            )
+            
             
             #asm(save_target_asm, new_instruction_address)
-            extra_pop = "\nadd rsp, 8\n"
+            extra_pop = "\nlea rsp, [rsp+8]\n"
             extra_push = 8
             
             
@@ -1181,12 +1193,12 @@ def add_instruction_redirect(
 
 
 def go_jump_breakpoint(jump_to_address: int, callback: Callable[[Any], None], event: Any) -> None:
-    print("go_jump_breakpoint", jump_to_address)
+    #print("go_jump_breakpoint", jump_to_address)
     event.get_thread().set_pc(jump_to_address)
     callback(event)
 
 
-def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int) -> None:
+def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int, do_init: bool) -> None:
     """Insert breakpoints at every CALL within a function's instruction list."""
     global shell_code_address_offset
     process = event.get_process()
@@ -1195,7 +1207,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
     
     call_num = 0
     init_free_space = 0
-    doing_init = True
+    doing_init = do_init
     init_instructions = []
     for instruction_num, instruction in enumerate(instructions):
         instruction_name = instruction[2].split(" ")[0]
@@ -1206,18 +1218,32 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
             do_relocation = False
             is_jump = instruction_name.startswith("j")
             
+            #if instruction_name == "cmp":
+            #    do_relocation = True # Test without things that are cmp
+            #else:
             init_free_space += instruction_len
             init_instructions.append(instruction)
             
-            #do_relocation = True #If something jumps in to ine of the first few instructions uncomment this
+            #do_relocation = True #If something jumps in to one of the first few instructions uncomment this
             
             if is_jump: #jumps cant be relocated unless they are the final instruction
                 do_relocation = True
+            #    doing_init = False # Test without jumps
+            
+            #if "rip" in instruction[2]:
+            #    doing_init = False # Test without things that contain RIP
+            
+            #if instruction_name == "call":
+            #    doing_init = False # Test without things that are calls
+            
+            #if instruction_name == "cmp":
+            #    doing_init = False # Test without things that are calls
             
             if init_free_space >= 5:
                 do_relocation = True
             
-            if do_relocation:
+            if do_relocation and doing_init:
+                doing_init = False
                 print("relocating_init: ", init_instructions, "cur instruciton:", instruction[2])
                 call_num = add_instruction_redirect(
                     function_address,
@@ -1229,7 +1255,6 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
                     partial(function_called_break_point, function_id, instruction_address),
                 )
                 
-                doing_init = False
         elif instruction_name == "call":
             #print("type: callback", instruction[2], instruction_address)
             
@@ -1271,7 +1296,10 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
 
         # Exceptions
         if code == win32.EXCEPTION_DEBUG_EVENT:
-            name = event.get_exception_description()
+            try:
+                name = event.get_exception_description()
+            except Exception as e:
+                name = "UnknownDebugerException"
             exception_code = event.get_exception_code()
 
             if name == "Breakpoint":
@@ -1279,7 +1307,7 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
                 return
                
             moved_addresses = find_moved_instruction(address)
-            raise Exception("non-breakpoint EXCEPTION_DEBUG_EVENT:", name, "exception_code:", exception_code, "address:", address, "tid:", tid, "move:", moved_addresses)
+            print("non-breakpoint EXCEPTION_DEBUG_EVENT:", name, "exception_code:", exception_code, "address:", address, "tid:", tid, "move:", moved_addresses)
             return
 
         # Module load / process start
@@ -1485,7 +1513,7 @@ def get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, where):
                         raise ValueError("offset bigger than 2Gb, not implemented when using reg2")
                     return f"lea  {where}, [{reg} + {reg2}*{reg2_mult} + {offset}]\nmov {where}, [{where}]"
                 else:
-                    return f"movabs {where}, {offset}\nadd {where}, {reg}\nmov {where}, [{where}]"
+                    return f"movabs {where}, {offset}\nlea {where}, [{where} + {reg}]\nmov {where}, [{where}]"
     else:
         if reg is None:
             return f"movabs     {where}, {offset}"
@@ -1496,7 +1524,7 @@ def get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, where):
                 if reg == where:
                     raise ValueError("adding offset to own registry, not implemented")
                 else:
-                    return f"movabs {where}, {offset}\nadd {where}, {reg}"
+                    return f"movabs {where}, {offset}\nlea {where}, [{where} + {reg}]"
        
     
     return f"mov {where}, 0"
@@ -1735,8 +1763,8 @@ push r12
 sub  rsp, 32
     """) + code.replace(";", "\n") +"\n"
     assembly2 = strip_semicolon_comments("""
-    ; ===== after call: pop shadow and undo alignment correction =====
 add  rsp, 32
+    ; ===== after call: pop shadow and undo alignment correction =====
 
 pop r12
 pop r11
