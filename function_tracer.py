@@ -88,6 +88,9 @@ call_stack: List[str] = []
 # Each entry: (target_fn_addr, enter_callback, exit_callback)
 functions_to_hook: List[Tuple[int, Callable[[Any], None], Callable[[Any], None]]] = []
 
+moved_instructions = {}
+ref_instructions = {}
+
 # Initialize Keystone for x64.
 ks = Ks(KS_ARCH_X86, KS_MODE_64)
 
@@ -309,14 +312,22 @@ def clean_instructions(instructions, process, enter_callback):
     clean_code.append(clean)
     new_instruction_address += len(clean)
     external_breakpoints[new_location+1] = enter_callback
-    
+    old_asm = ""
+    new_asm = ""
     for instruction in instructions:
         instruction_address = instruction[0]
         instruction_len = instruction[1]
         instruction_asm = instruction[2]
         instruction_parts = instruction_asm.split(" ")
         
+        if instruction_parts[0] == "call":
+            if free_space == 0:
+                raise Exception("cant move first instruction if it is a call")
+            else:
+                break
+            
         
+        old_asm += instruction_asm+";"
         
         free_space += instruction_len
         
@@ -328,21 +339,48 @@ def clean_instructions(instructions, process, enter_callback):
         # RIP-relative handling
         if "rip +" in instruction_asm or "rip -" in instruction_asm:
             print("Accounting for altered RIP", instruction_asm)
-            diff = new_instruction_address - instruction[0]
-            rip_address = instruction_address + instruction_len
-            rip_address = f"{rip_address}"
-            instruction_asm = instruction_asm.replace("rip", rip_address)
+            
+            convs  = ""
+            if "rip +" in instruction_asm:
+                sign = "+"
+            elif "rip -" in instruction_asm:
+                sign = "-"
+                convs = "-"
+            else:
+                raise ValueError("Not Implemnted")
+            
+            initial_part = instruction_asm.split("]")[0]
+            arg_part = initial_part.split("[")[-1]
+            parts = arg_part.split(" ")
+            off_str = convs + parts[-1]
+            off = int(off_str, 16)
+            diff = new_instruction_address - instruction_address
+            new_arg_part = "rip +"+ str(off-diff)
+
+            
+            
+            instruction_asm = instruction_asm.replace(arg_part, new_arg_part)
+
         
         clean = asm(instruction_asm, new_instruction_address)
-        print('old:', instruction[2], 'new:', instruction_asm)
+        #print('old:', instruction[2], 'new:', instruction_asm)
         clean_code.append(clean)
         new_instruction_address += len(clean)
         
+        new_asm += instruction_asm+";"
+        
+        
+            
+        #break
         if free_space >= 5:
             extra_bytes = max(free_space - 5, 0)#jmp is 5 bytes long
             jump_asm = f"jmp {new_location}" + (";nop" * extra_bytes)
             break
+        
+        if instruction_parts[0] == "call":
+            break
     
+    print('old:', old_asm, 'new:', new_asm)
     
     #Add jumping back to shell code
     jump_back_address = function_addres + free_space
@@ -619,13 +657,21 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
             disassembled_functions.append(instructions)
             save_cache = True
         
-        #if pdata_ordinal not in(122,):
+        
         #instrument_function(instructions, process, partial(function_enter_break_point, function_id, function_start_addr))
+        
+        #if pdata_ordinal not in(122,):
+        #update altered instructions
+        instcode = process.read(function_start_addr, function_end_addr - function_start_addr)
+        instructions = process.disassemble_string(function_start_addr, instcode)
+        
+        insert_break_at_calls(event, pid, instructions, function_id, function_start_addr)
+        
         
         #print("ordinal:", pdata_ordinal)
         #if pdata_ordinal not in(122,) and pdata_ordinal < 120:
         
-        insert_break_at_calls(event, pid, instructions, function_id, function_start_addr)
+        
         
         
         #if pdata_ordinal == 168:
@@ -691,10 +737,10 @@ def dud_func(event):
 
 def add_instruction_redirect(
     function_address: int,
-    instruction_address_unused: int,
+    is_init: bool,
     instructions: List[Tuple[int, int, str, str]],
     process: Any,
-    reg, reg2, reg2_mult, indirect, offset,
+    call_num,
     enter_callback: Callable[[Any], None],
     exit_callback: Callable[[Any], None],
 ) -> Tuple[Optional[int], int]:
@@ -711,200 +757,301 @@ def add_instruction_redirect(
     jump_back_address: Optional[int] = None
     
     closer_alocation = False
+    
+    assert len(instructions) != 0, "Cant move zero instructions"
+    
+    # The place jumping from
+    insert_location = instructions[0][0]
+    # Where execution resumes after the moved instructions
+    jump_back_address = instructions[-1][0] + instructions[-1][1]
+    
+    instructions_len = 0
+    instructions_asm = ""
+    for instruciton_dat in instructions:
+        instructions_len += instruciton_dat[1]
+        instructions_asm += instruciton_dat[2]
+    
+    jump_distance = abs(jump_back_address-jump_to_address)
+    
+    insert_len = 0
+    jump_type = "none"
+    # Prefer full 5-byte JMP if possible, otherwise insert 1 byte (int3)
+    if instructions_len >= 5:
+        if jump_distance > 2147483647:
+            closer_alocation = allocate_close(process, jump_back_address)
+            jump_distance2 = abs(jump_back_address - closer_alocation)
+            if jump_distance2 > 2147483647:
+                raise Exception("closer alocation not close enogh: "+ str(jump_distance2)+ " "+ str(jump_distance))
+            process.write(closer_alocation, asm("jmp [RIP]") + struct.pack("<Q", jump_to_address))
+            if not closer_alocation:
+                raise ValueError("cant jump that far ("+str(instructiosn_len)+"), from: " + str(jump_back_address) + " to: "+ str(jump_to_address) + " dist: "+str(jump_distance)+" best would be to alocate memmory closer")
+        insert_len = 5
+        jump_type = "normal"
+    elif instructions_len >= 2:#FIXMEEE whenever minhook moves these breakpoints shit stops working
+        insert_len = 1
+        jump_type = "2byte"
+    else:#FIXMEEE whenever minhook moves these breakpoints shit stops working
+        insert_len = 1
+        jump_type = "1byte"
+    
+    extra_bytes = max(instructions_len - insert_len, 0)
+    jmp_to_shellcode: Optional[bytes] = None
+    asmm: Optional[str] = None
+    jump_breakpoint = None
+    if jump_type == "normal":
+        to_address = jump_to_address
+        if closer_alocation:
+            to_address = closer_alocation
+        asmm = f"jmp {to_address}" + (";nop" * extra_bytes)
+        jmp_to_shellcode = asm(asmm, insert_location)
+    elif jump_type == "2byte":
+        jmp_to_shellcode = b"\xCC" + (b"\x90" * extra_bytes)
+        jump_breakpoint = insert_location + 1
+    elif jump_type == "1byte":
+        jmp_to_shellcode = b"\xCC"
+        jump_breakpoint = insert_location + 1
+    
+    if jump_breakpoint is not None:
+        assert (jump_breakpoint not in external_breakpoints), "Overwriting old breakpoint"
+        external_breakpoints[jump_breakpoint] = partial(go_jump_breakpoint, jump_to_address, dud_func)
+    
+    print(jump_type,'org:', instructions_asm, "(", instructions_len, ") write:", asmm, "bytes:", len(jmp_to_shellcode), "at:", insert_location, "jump_to_address:", jump_to_address, "diff:", jump_distance)
 
-    if len(instructions) != 0:
-        instruction = instructions[0]
-        instruction_address = instruction[0]
-        instruction_len = instruction[1]
-        instruction_asm = instruction[2]
-        instruction_parts = instruction_asm.split(" ")
-
-        # Where execution resumes after the original instruction
-        jump_back_address = instruction_address + instruction_len
-
-        insert_len = 0
-        jump_type = "none"
+    if is_init:
+        print("we are inserting a call init capturer")
+        # Tracking assembly: adds a breakpoint before and after the real function.
+        # Saves the return address, modifies it to point to the post-call int3, then jumps.
+        int3_bef = ""
+        if use_python_tracing:
+            int3_bef = "int 3;"
         
-        #Make sure we are using a tempreg that is not used
-        reg_to_use = 'r9'
-        if reg is not None:
-            reg = reg.lower()
-            if reg_to_use == reg:
-                reg_to_use = 'r8'
-        if reg2 is not None:
-            reg = reg.lower()
-            if reg_to_use == reg:
-                reg_to_use = 'r10'
-        if reg is not None:
-            reg = reg.lower()
-            if reg_to_use == reg:
-                reg_to_use = 'r11'
-                
-        #if reg2 is not None:
-        #    print(reg, reg2, reg2_mult, indirect, offset)
-        #    exit()
         
-        target_resolver = get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, reg_to_use)
-        print(instruction_asm, target_resolver, reg, reg2, reg2_mult, indirect, offset, reg_to_use, new_instruction_address)
-        #exit()
         
-        call_asm = (
-            f"movabs     rcx, {function_address};"    # first argument function_address
-            f"movabs     rdx, {instruction_address};"    # second argument call_address
-            f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
-            f"mov     r9, [r15-8];"# forth arg target address # original rsp in rax, saved in r15 by generate_clean_asm_func_call the next value in the stack is filled in by save_target_asm which is what we reference here
-            f"movabs     rax, {call_tracer_dll_func['function_call_trace_point']};"
+        
+        
+        enter_asm = (
+            f"movabs rcx, {function_address};"    # first argument 
+            "mov     rdx, r15;"    # second argument return address saved in r15 by generate_clean_asm_func_call
+            f"movabs rax, {call_tracer_dll_func['function_enter_trace_point']};"
             "call    rax;"
         )
-        #print(call_asm)
+        jump_table_address = new_instruction_address
         
-        save_target_asm = (#FIXMEE hope to god they dont want to use rsp relative indexing
-            "sub rsp, 8\n" #make space on the stack
-            f"push {reg_to_use} \n" #Save r9
-            "add rsp, 16\n"
-            f"{target_resolver}\n" #fill r9 with target address # {target_resolver}
-            f"mov [rsp-8], {reg_to_use}\n" #save r9 in the space we made on the stack
-            "sub rsp, 16\n"
-            f"pop {reg_to_use}\n" #restore r9
+        enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm), jump_table_address)
+        jump_write_address = jump_table_address + len(enter_func_call_code)
+        
+        
+        
+        
+        function_caller_asm = (
+            int3_bef + # triger interupt for tracing purpose and saving original return address
+            "push rax;" # save value in rax
+            "mov rax, [RIP + 20];" # fill rax with addres leading to new_function_return_address
+            "mov [RSP+0x8], rax;" # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
+            "pop rax;" # restore rax 
+            "jmp [RIP];" # jump to new_function_start_address
+            #"int 3" # triger interupt for tracing purpose and returning to original location
         )
         
-        #asm(save_target_asm, new_instruction_address)
-        extra_pop = "\nadd rsp, 8\n"
-        extra_push = 8
+        function_caller = asm(function_caller_asm, jump_write_address)
+        new_function_return_address = jump_write_address + len(function_caller)+16
         
+        exit_asm = (
+            f"movabs rcx, {function_address};"    # first argument 
+            f"movabs rax, {call_tracer_dll_func['function_exit_trace_point']};"
+            "call    rax;"
+            "mov     [r15], rax;" #Restore the original return address that was given by function_exit_trace_point r15 is a pointer to the top of the stack ie what rsp was at the entry of the fuction
+        )
+        exit_func_call_code = asm("sub rsp, 8;"+generate_clean_asm_func_call(exit_asm), jump_table_address)
         
-        #extra_pop = ""
-        #save_target_asm = ""
-        #call_asm = ""
-        #extra_push = 0
+        final_jump_code = asm("ret", jump_table_address + len(exit_func_call_code))
         
-        #print("target_asm", save_target_asm)
-        #exit()
+        f_break = b""
+        if use_python_tracing:
+            f_break = b"\xCC"
+            
+        new_function_start_address = jump_table_address + len(enter_func_call_code) + len(function_caller) + 16 + len(exit_func_call_code) + len(f_break) + len(final_jump_code)
+        jump_code = enter_func_call_code + function_caller + struct.pack("<Q", new_function_start_address) + struct.pack("<Q", new_function_return_address) + exit_func_call_code + f_break + final_jump_code
         
-        call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm, extra_push = extra_push) + extra_pop, new_instruction_address)
-        #call_func_call_code = b""
-        #exit()
-        
-        code.append(call_func_call_code)
-        new_instruction_address += len(call_func_call_code)
+        final_breakpoint = len(jump_code)+jump_table_address - len(final_jump_code)
         
         if use_python_tracing:
-            # Add entry breakpoint in the shellcode
-            new_code = b"\xCC"
-            code.append(new_code)
-            new_instruction_address += len(new_code)
-            break_point_entry = new_instruction_address
+            function_id = get_function_id(function_address)
+            enter_func_callback = partial(function_enter_break_point, function_id, function_address)
+            exit_func_callback = partial(function_exit_break_point, function_id, function_address)
+            external_breakpoints[jump_write_address + 2] = partial(min_hooked_entry_hook, jump_table_address, function_address, enter_func_callback)
+            external_breakpoints[final_breakpoint] = partial(min_hooked_exit_hook, jump_table_address, exit_func_callback)
+        #print(len(jump_code))
+        #exit()
+        code.append(jump_code)
+        new_instruction_address += len(jump_code)
+        #process.write(jump_table_address, jump_code)
 
-        jump_distance = abs(instruction_address-jump_to_address)
-        # Prefer full 5-byte JMP if possible, otherwise insert 1 byte (int3)
-        if instruction_len >= 5:
-            if jump_distance > 2147483647:
-                closer_alocation = allocate_close(process, instruction_address)
-                jump_distance2 = abs(instruction_address-closer_alocation)
-                if jump_distance2 > 2147483647:
-                    raise Exception("closer alocation not close enogh: "+ str(jump_distance2)+ " "+ str(jump_distance))
-                process.write(closer_alocation, asm("jmp [RIP]") + struct.pack("<Q", jump_to_address))
-                if not closer_alocation:
-                    raise ValueError("cant jump that far ("+str(instruction_len)+"), from: " + str(instruction_address) + " to: "+ str(jump_to_address) + " dist: "+str(jump_distance)+" best would be to alocate memmory closer")
-            insert_len = 5
-            jump_type = "normal"
-        elif instruction_len >= 2 and instruction_parts[0] in ("call",):#FIXMEEE whenever minhook moves these breakpoints shit stops working
-            insert_len = 1
-            jump_type = "call"
-        else:#FIXMEEE whenever minhook moves these breakpoints shit stops working
-            insert_len = 1
-            jump_type = "1byte"
-
-        extra_bytes = max(instruction_len - insert_len, 0)
-        jmp_to_shellcode: Optional[bytes] = None
-        asmm: Optional[str] = None
-        jump_breakpoint = None
-        if jump_type == "normal":
-            to_address = jump_to_address
-            if closer_alocation:
-                to_address = closer_alocation
-            asmm = f"jmp {to_address}" + (";nop" * extra_bytes)
-        elif jump_type == "call":
-            jmp_to_shellcode = b"\xCC" + (b"\x90" * extra_bytes)
-            jump_breakpoint = instruction_address + 1
-        elif jump_type == "1byte":
-            jmp_to_shellcode = b"\xCC"
-            jump_breakpoint = instruction_address + 1
-
-        is_jump = instruction_asm.startswith("j")
-        call_relocate = False
-        static = False
-        #indirect = False
-        # RIP-relative handling
-        if "rip +" in instruction_asm or "rip -" in instruction_asm:
-            sign = ""
-            convs  = ""
-            if "rip +" in instruction_asm:
-                sign = "+"
-            elif "rip -" in instruction_asm:
-                sign = "-"
-                convs = "-"
-            else:
-                raise ValueError("Not Implemnted")
-            print("Accounting for altered RIP", instruction_asm)
-            initial_part = instruction_asm.split("]")[0]
-            arg_part = initial_part.split("[")[-1]
-            parts = arg_part.split(" ")
-            off_str = convs + parts[-1]
-            off = int(off_str, 16)
-            rip_address = instruction_address + instruction_len
-            diff = new_instruction_address - instruction_address
-            new_arg_part = "rip +"+ str(off-diff)
-
-            
-            call_to = offset
-            
-            #instruction_asm = instruction_asm.replace(arg_part, new_arg_part)
-            instruction_asm = instruction_asm.replace("rip", str(rip_address))
-            static = call_to
-        elif "rip" in instruction_asm:
-            raise ValueError("If instruction directly uses RIP in a non-relative way we can't move it" + instruction_asm)
-            return False, None
+    for instruciton_dat in instructions:
+        instruction_address = instruciton_dat[0]
+        instruction_len = instruciton_dat[1]
+        instruction_asm = instruciton_dat[2]
+        instruction_parts = instruction_asm.split(" ")
         
-        if instruction_parts[0] in ("call", "jmp"):
-            # Recompile jmps and calls
-            if len(instruction_parts) == 2 and instruction_parts[1].startswith("0x"):
-                # Absolute target; nothing to change
-                print("static call/jmp")
-                static = int(instruction_parts[1], 16)
-                if instruction_parts[0] == "call":
-                    call_relocate = True
-            elif not static:
-                print("dynamic call/jmp")
-                #return False, break_point_entry
-                #return False, break_point_entry
-                if instruction_parts[0] == "call":
-                    call_relocate = True
-        elif is_jump:
-            print("complex jump will fail", instruction_asm)
-            return False, None
-        elif instruction_parts[0] in ("cmp",):
-            print("non-movable instruction", instruction_asm)
-            return False, None
+        new_start_address = new_instruction_address
+        
+        static_call = False
+        
+        rip_to = None
+        contains_rip = False
+        if "rip" in instruction_asm:
+            contains_rip = True
+        
+        if instruction_parts[0] == "call":
+            reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruciton_dat)
 
-        if asmm is not None or jmp_to_shellcode is not None:
-            if jmp_to_shellcode is None:
-                jmp_to_shellcode = asm(asmm, instruction_address)
-            print(jump_type,'org:', instruction_asm, "(", instruction_len, ") write:", asmm, "bytes:", len(jmp_to_shellcode), "at:", instruction_address, "jump_to_address:", jump_to_address, "diff:", jump_to_address - instruction_address)
+            
+            #jump_back_address = instruction_address + instruction_len
+
             
             
-            if jump_breakpoint is not None:
-                assert (jump_breakpoint not in external_breakpoints), "Overwriting old breakpoint"
-                external_breakpoints[jump_breakpoint] = partial(go_jump_breakpoint, jump_to_address, dud_func)
+            #Make sure we are using a tempreg that is not used
+            reg_to_use = 'r9'
+            if reg is not None:
+                reg = reg.lower()
+                if reg_to_use == reg:
+                    reg_to_use = 'r8'
+            if reg2 is not None:
+                reg = reg.lower()
+                if reg_to_use == reg:
+                    reg_to_use = 'r10'
+            if reg is not None:
+                reg = reg.lower()
+                if reg_to_use == reg:
+                    reg_to_use = 'r11'
+                    
+            #if reg2 is not None:
+            #    print(reg, reg2, reg2_mult, indirect, offset)
+            #    exit()
+            
+            target_resolver = get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, reg_to_use)
+            print(instruction_asm, target_resolver, reg, reg2, reg2_mult, indirect, offset, reg_to_use, new_instruction_address)
+            #exit()
+            
+            call_asm = (
+                f"movabs     rcx, {function_address};"    # first argument function_address
+                f"movabs     rdx, {instruction_address};"    # second argument call_address
+                f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
+                f"mov     r9, [r15-8];"# forth arg target address # original rsp in rax, saved in r15 by generate_clean_asm_func_call the next value in the stack is filled in by save_target_asm which is what we reference here
+                f"movabs     rax, {call_tracer_dll_func['function_call_trace_point']};"
+                "call    rax;"
+            )
+            #print(call_asm)
+            
+            save_target_asm = (
+                "sub rsp, 8\n" #make space on the stack
+                f"push {reg_to_use} \n" #Save r9
+                "add rsp, 16\n"
+                f"{target_resolver}\n" #fill r9 with target address # {target_resolver}
+                f"mov [rsp-8], {reg_to_use}\n" #save r9 in the space we made on the stack
+                "sub rsp, 16\n"
+                f"pop {reg_to_use}\n" #restore r9
+            )
+            
+            #asm(save_target_asm, new_instruction_address)
+            extra_pop = "\nadd rsp, 8\n"
+            extra_push = 8
+            
+            
+            #extra_pop = ""
+            #save_target_asm = ""
+            #call_asm = ""
+            #extra_push = 0
+            
+            #print("target_asm", save_target_asm)
+            #exit()
+            
+            call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm, extra_push = extra_push) + extra_pop, new_instruction_address)
+            #call_func_call_code = b""
+            #exit()
+            
+            code.append(call_func_call_code)
+            new_instruction_address += len(call_func_call_code)
             
             if use_python_tracing:
+                # Add entry breakpoint in the shellcode
+                new_code = b"\xCC"
+                code.append(new_code)
+                new_instruction_address += len(new_code)
+                break_point_entry = new_instruction_address
+                
                 assert (break_point_entry not in external_breakpoints), "Overwriting old breakpoint"
-                external_breakpoints[break_point_entry] = enter_callback
-        else:
-            raise ValueError("should never happen")
-            return False, None
+                external_breakpoints[break_point_entry] = partial(enter_callback, call_num, reg, reg2, reg2_mult, indirect, offset)
 
-        if static and True:
+        
+            if reg is None and offset is not None:
+                static_call = offset
+                # RIP-relative handling
+                
+            if (reg is None or (reg is not None and reg.lower() == "rip")) and offset is not None:
+                rip_to = offset
+            
+        
+        else: #Not a call
+        
+            # RIP-relative handling FIXMEE This wont handle a scenario like [rip + eax*1 + 123]
+            if "rip +" in instruction_asm or "rip -" in instruction_asm:
+                print("Accounting for altered RIP", instruction_asm)
+                
+                convs  = ""
+                if "rip +" in instruction_asm:
+                    sign = "+"
+                elif "rip -" in instruction_asm:
+                    sign = "-"
+                    convs = "-"
+                else:
+                    raise ValueError("Not Implemnted")
+                
+                initial_part = instruction_asm.split("]")[0]
+                arg_part = initial_part.split("[")[-1]
+                parts = arg_part.split(" ")
+                assert (len(parts) == 3), "only support [rip + 123] not what this is: "+instruction_asm
+                off_str = convs + parts[-1]
+                off = int(off_str, 16)
+                diff = new_instruction_address - instruction_address
+                instruct_off = off-diff
+                if instruct_off > 2147483647:
+                    raise Exception("altering: "+instruction_asm + "new offset to large")
+                
+                rip_to = instruction_address + instruction_len + off
+                
+
+                
+                instruction_asm_test = instruction_asm.replace(arg_part, "rip + "+ str(instruct_off))
+                
+                new_code = asm(instruction_asm_test, new_instruction_address)
+                new_code_len = len(new_code)
+                if instruction_len != new_code_len:
+                    instruct_off -= (new_code_len - instruction_len)
+                    instruction_asm_test = instruction_asm.replace(arg_part, "rip + "+ str(instruct_off))
+                    
+                instruction_asm = instruction_asm_test
+
+        
+        is_jump = instruction_asm.startswith("j")
+        
+        if is_jump:
+            reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruciton_dat)
+            if (reg is None or (reg is not None and reg.lower() == "rip")) and offset is not None:
+                rip_to = offset
+        
+        if is_jump and rip_to is not None:
+            if rip_to in pdata_function_ids:
+                print("jump to function with address: "+ str(rip_to))
+            else:
+                ref_instructions[instruction_address] = rip_to
+                #raise Exception("Trying to jump to non function: "+str(rip_to))
+        #    raise Exception("complex jump will fail unless it is the final instruction: "+ instruction_asm)
+        #elif instruction_parts[0] in ("cmp",):
+        #    raise Exception("non-movable instruction (Should probably just remove this exception cmp is movable): "+ instruction_asm)
+
+
+        if static_call and True:
 
             
             if indirect:
@@ -941,13 +1088,12 @@ def add_instruction_redirect(
             new_instruction_address += len(new_code)
             
             #save the target function/pointer that we are trying to call
-            target = static
-            new_code = struct.pack("<Q", target)
+            new_code = struct.pack("<Q", static_call)
             code.append(new_code)
             new_instruction_address += len(new_code)
 
         # If the function we are patching depends on the return address, problematicly this does not let us capture the return.
-        elif static and False: #This code path manually sets the return address to the real next instruciton then jumps to the function
+        elif static_call and False: #This code path manually sets the return address to the real next instruciton then jumps to the function
             asd = "push rax;push rax;mov rax, [RIP + 12];mov [RSP+0x8], rax;pop rax;jmp [rip + 8];"
             new_code = asm(asd, new_instruction_address)
 
@@ -955,12 +1101,13 @@ def add_instruction_redirect(
             new_instruction_address += len(new_code)
             
             #save the return position
+            raise Exception("we are now jumping to jump_back_addressthis only wors if this is the last instruction in the list we are moving, and it wont be tracing the return")
             new_code = struct.pack("<Q", jump_back_address)
             code.append(new_code)
             new_instruction_address += len(new_code)
             
             #save the target function that we are trying to call
-            target = static
+            target = static_call
             new_code = struct.pack("<Q", target)
             code.append(new_code)
             new_instruction_address += len(new_code)
@@ -969,36 +1116,56 @@ def add_instruction_redirect(
             
             
         else:
+            print("asm:", new_instruction_address, instruction_asm, "org:", instruciton_dat[2])
             new_code = asm(instruction_asm, new_instruction_address)
+            new_len = len(new_code)
+            if contains_rip and False:
+                if instruction_len != new_len:
+                    diff = abs(new_len - instruction_len)
+                    if new_len > instruction_len:
+                        raise Exception("new instruction longer than old RIP accounting will fail, len: "+ str(new_len)+" > "+str(instruction_len))
+                    else:
+                        raise Exception("new instruction shorter than old RIP accounting will fail, len: "+ str(new_len)+" < "+str(instruction_len) + " "+ instruction_asm)
+                        diff = new_len - instruction_len
+                        new_code = asm(("nop;"*diff) + instruction_asm, new_instruction_address)
+                        new_len = len(new_code)
+            
             code.append(new_code)
-            new_instruction_address += len(new_code)
-
-    if use_python_tracing:
-        # Add exit breakpoint and final jump back to original flow
-        code.append(b"\xCC")
-        new_instruction_address += 1
-        break_point_exit = new_instruction_address
-        assert (break_point_exit not in external_breakpoints), "Overwriting old breakpoint"
-        external_breakpoints[break_point_exit] = exit_callback
-    
-    
-    #function_called_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address);
-    call_asm = (
-        f"movabs     rcx, {function_address};"    # first argument function_address
-        f"movabs     rdx, {instruction_address};"    # second argument call_address
-        f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
-        f"movabs     rax, {call_tracer_dll_func['function_called_trace_point']};"
-        "call    rax;"
-    )
-    
-    call_func_called_code = asm(generate_clean_asm_func_call(call_asm), new_instruction_address)
-    #call_func_called_code = b""
-    
-    code.append(call_func_called_code)
-    new_instruction_address += len(call_func_called_code)
-
+            new_instruction_address += new_len
+        
+        
+        if instruction_parts[0] == "call":
+            if use_python_tracing:
+                # Add exit breakpoint and final jump back to original flow
+                code.append(b"\xCC")
+                new_instruction_address += 1
+                break_point_exit = new_instruction_address
+                assert (break_point_exit not in external_breakpoints), "Overwriting old breakpoint"
+                external_breakpoints[break_point_exit] = partial(exit_callback, call_num)
+            
+            
+            #function_called_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address);
+            call_asm = (
+                f"movabs     rcx, {function_address};"    # first argument function_address
+                f"movabs     rdx, {instruction_address};"    # second argument call_address
+                f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
+                f"movabs     rax, {call_tracer_dll_func['function_called_trace_point']};"
+                "call    rax;"
+            )
+            
+            call_func_called_code = asm(generate_clean_asm_func_call(call_asm), new_instruction_address)
+            #call_func_called_code = b""
+            
+            code.append(call_func_called_code)
+            new_instruction_address += len(call_func_called_code)
+            
+            
+            
+            call_num += 1
+        
+        moved_instructions[instruction_address] = (new_start_address, new_instruction_address)
+        
     last_jump_asm = f"jmp [RIP]"
-    #print("last_jump asm:", last_jump_asm)
     new_code = asm(last_jump_asm, new_instruction_address)+ struct.pack("<Q", jump_back_address)
     code.append(new_code)
     new_instruction_address += len(new_code)
@@ -1008,9 +1175,9 @@ def add_instruction_redirect(
 
     shell_code_address_offset += shell_len + 20
     process.write(jump_to_address, shellcode)
-    process.write(instruction_address, jmp_to_shellcode)
+    process.write(insert_location, jmp_to_shellcode)
 
-    return jump_to_address, break_point_entry
+    return call_num
 
 
 def go_jump_breakpoint(jump_to_address: int, callback: Callable[[Any], None], event: Any) -> None:
@@ -1021,37 +1188,70 @@ def go_jump_breakpoint(jump_to_address: int, callback: Callable[[Any], None], ev
 
 def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int) -> None:
     """Insert breakpoints at every CALL within a function's instruction list."""
+    global shell_code_address_offset
     process = event.get_process()
     
+
+    
     call_num = 0
+    init_free_space = 0
+    doing_init = True
+    init_instructions = []
     for instruction_num, instruction in enumerate(instructions):
         instruction_name = instruction[2].split(" ")[0]
         instruction_address = instruction[0]
         instruction_len = instruction[1]
-
-        if instruction_name == "call":
-            print("type: callback", instruction[2], instruction_address)
+        
+        if doing_init:
+            do_relocation = False
+            is_jump = instruction_name.startswith("j")
+            
+            init_free_space += instruction_len
+            init_instructions.append(instruction)
+            
+            #do_relocation = True #If something jumps in to ine of the first few instructions uncomment this
+            
+            if is_jump: #jumps cant be relocated unless they are the final instruction
+                do_relocation = True
+            
+            if init_free_space >= 5:
+                do_relocation = True
+            
+            if do_relocation:
+                print("relocating_init: ", init_instructions, "cur instruciton:", instruction[2])
+                call_num = add_instruction_redirect(
+                    function_address,
+                    True,
+                    init_instructions,
+                    process,
+                    call_num,
+                    partial(function_call_break_point, function_id, instruction_address),
+                    partial(function_called_break_point, function_id, instruction_address),
+                )
+                
+                doing_init = False
+        elif instruction_name == "call":
+            #print("type: callback", instruction[2], instruction_address)
             
             print(instruction)
-            reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruction)
-            #To get the target value to the function_call_break_point() you would need to edit add_instruction_redirect() to take reg, indirect and offset and save/return the target value somehow 
+            
             replace_instructions = [instruction]
-            jump_to_address, break_point_entry = add_instruction_redirect(
+            call_num = add_instruction_redirect(
                 function_address,
-                instruction_address,
+                False,
                 replace_instructions,
                 process,
-                reg, reg2, reg2_mult, indirect, offset,
-                partial(function_call_break_point, function_id, instruction_address, call_num, reg, reg2, reg2_mult, indirect, offset),
-                partial(function_called_break_point, function_id, instruction_address, call_num),
+                call_num,
+                partial(function_call_break_point, function_id, instruction_address),
+                partial(function_called_break_point, function_id, instruction_address),
             )
-            if not jump_to_address:
-                print("could not create jump_table_entry for instruction", instruction, instructions)
-                #break
-                #exit(0)
-                #sys.exit()
-            call_num += 1
-
+             
+def find_moved_instruction(address):
+    results = []
+    for org_addr, (new_start, new_end) in moved_instructions.items():
+        if new_start <= address < new_end:
+            results.append((org_addr, new_start, new_end))
+    return results
 
 def on_debug_event(event: Any, reduce_address: bool = False) -> None:
     """Main WinAppDbg event callback."""
@@ -1077,8 +1277,9 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
             if name == "Breakpoint":
                 _ = deal_with_breakpoint(event, process, pid, tid, address)
                 return
-
-            print("non-breakpoint EXCEPTION_DEBUG_EVENT:", name, "exception_code:", exception_code, "address:", address, "tid:", tid)
+               
+            moved_addresses = find_moved_instruction(address)
+            raise Exception("non-breakpoint EXCEPTION_DEBUG_EVENT:", name, "exception_code:", exception_code, "address:", address, "tid:", tid, "move:", moved_addresses)
             return
 
         # Module load / process start
@@ -1248,11 +1449,13 @@ def get_targetaddr(reg, reg2, reg2_mult, indirect, offset, context, process):
     """use info to get CALL target given thread context."""
     target_addr = offset
     if reg is not None:
+        reg = reg.capitalize()
         if reg in context:
             target_addr += context[reg]
         else:
             raise ValueError("Unkownn registry:", reg)
     if reg2 is not None:
+        reg2 = reg2.capitalize()
         if reg2 in context:
             target_addr += context[reg2]*reg2_mult
         else:
@@ -1691,7 +1894,7 @@ def on_calltrace_dll_ready(event):
                 print("No export table found.")
         
         
-        submit_hook_function_list_for_injection()
+        #submit_hook_function_list_for_injection()
         
         # Hook all functions listed in .pdata
         #hook_functions(process, event, pid)
