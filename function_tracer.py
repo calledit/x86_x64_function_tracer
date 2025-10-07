@@ -743,6 +743,14 @@ def debug_reg_dump_break(event: Any) -> None:
     context = thread.get_context()
     print("DEBUG:", context)
 
+def capstone_2_keystone(instruction_asm):
+#fix differance betwen capstone and keystone asm
+    instruction_asm = instruction_asm.replace('call ptr [', 'call qword ptr [')
+    
+    if instruction_asm.startswith("comisd "):
+        instruction_asm = instruction_asm.replace(' xmmword ptr [', ' qword ptr [')
+    
+    return instruction_asm
 
 def add_instruction_redirect(
     function_address: int,
@@ -899,7 +907,7 @@ def add_instruction_redirect(
     for instruciton_dat in instructions:
         instruction_address = instruciton_dat[0]
         instruction_len = instruciton_dat[1]
-        instruction_asm = instruciton_dat[2]
+        instruction_asm = capstone_2_keystone(instruciton_dat[2])
         instruction_parts = instruction_asm.split(" ")
         
         new_start_address = new_instruction_address
@@ -1128,6 +1136,10 @@ def add_instruction_redirect(
             
             
         else:
+            
+                
+             
+            
             print("asm:", new_instruction_address, instruction_asm, "org:", instruciton_dat[2])
             new_code = asm(instruction_asm, new_instruction_address)
             new_len = len(new_code)
@@ -1138,9 +1150,6 @@ def add_instruction_redirect(
                         raise Exception("new instruction longer than old RIP accounting will fail, len: "+ str(new_len)+" > "+str(instruction_len))
                     else:
                         raise Exception("new instruction shorter than old RIP accounting will fail, len: "+ str(new_len)+" < "+str(instruction_len) + " "+ instruction_asm)
-                        diff = new_len - instruction_len
-                        new_code = asm(("nop;"*diff) + instruction_asm, new_instruction_address)
-                        new_len = len(new_code)
             
             code.append(new_code)
             new_instruction_address += new_len
@@ -1313,11 +1322,15 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
         # Module load / process start
         if code in (win32.LOAD_DLL_DEBUG_EVENT, win32.CREATE_PROCESS_DEBUG_EVENT):
             filename = event.get_filename()
-            basic_name = get_base_name(filename)
+            base_addr = event.get_module_base()
+            if filename is not None:
+                basic_name = get_base_name(filename)
+            else:
+                basic_name = 'no_file_addr_'+str(base_addr)
             pdb_name = os.path.join("pdbs", basic_name + ".pdb")
             print("loaded dll:", filename)
 
-            base_addr = event.get_module_base()
+            
             loaded_modules[basic_name] = base_addr
 
             # TODO: Load PDBs if available (not implemented)
