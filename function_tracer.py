@@ -105,6 +105,7 @@ use_python_tracing = True
 spawned = False
 call_trace_dll_ready = False
 load_dll_tid = -1
+jumps = []
 
 
 # -----------------------------
@@ -297,7 +298,7 @@ def instrument_function(instructions, process, enter_callback):
 
 def clean_instructions(instructions, process, enter_callback):
     global shell_code_address_offset, shell_code_address
-
+    raise Exception("this function is dead code")
     clean_code = []
     function_addres = instructions[0][0]
     function_id = get_function_id(function_addres)
@@ -600,7 +601,7 @@ def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: 
 
         # Disable entry breakpoint so it isn't copied while running MinHook
         breakpoint_active = False
-        event.debug.dont_break_at(pid, exe_entry_address)
+        #event.debug.dont_break_at(pid, exe_entry_address)
         event.get_thread().set_pc(jump_to_next)
         return True
     
@@ -632,6 +633,16 @@ def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: 
 
     return False
 
+def get_function_containing(address):
+    """
+    Return the (function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal)
+    tuple that contains the given address, or None if not found.
+    """
+    for entry in pdata_functions:
+        function_start_addr, function_end_addr, _, _ = entry
+        if function_start_addr <= address < function_end_addr:
+            return entry
+    return None
 
 def hook_calls(process: Any, event: Any, pid: int) -> None:
     """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
@@ -645,10 +656,9 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
             with open(disassembled_cache_file, "r") as f:
                 disassembled_functions = json.load(f)
     
-    #process.suspend() #FIXME we should suspend but process.suspend has a tendency to crash wen handling threads that just closed
+    print("disassemble and index instructions")
     for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
         function_id = get_function_id(function_start_addr)
-        DO_hook = True
         
         # Disassemble and patch CALL instructions in the function body
         if len(disassembled_functions) > pdata_ordinal:
@@ -659,25 +669,34 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
             disassembled_functions.append(instructions)
             save_cache = True
         
+        #try to find jumps so we know what jumps backward and to some extent where
+        for instruction_num, instruction in enumerate(instructions):
+            instruction_name = instruction[2].split(" ")[0]
+            is_jump = instruction_name.startswith("j")
+            
+            if is_jump:
+                reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruction)
+                jump_to = None
+                if reg is None:
+                    jump_to = offset
+                jumps.append((offset, instruction))
+    
+    
+    print("instrument functions:", len(pdata_functions))
+    do_init_at = 100
+    #process.suspend() #FIXME we should suspend but process.suspend has a tendency to crash wen handling threads that just closed
+    for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
+        function_id = get_function_id(function_start_addr)
         
-        #instrument_function(instructions, process, partial(function_enter_break_point, function_id, function_start_addr))
+        fo_init = True
+        if do_init_at < pdata_ordinal:
+            fo_init = False
+            
+        fo_init = True
         
+        instructions = disassembled_functions[pdata_ordinal]
+        insert_break_at_calls(event, pid, instructions, function_id, function_start_addr, pdata_ordinal, fo_init)
         
-        #update altered instructions
-        instcode = process.read(function_start_addr, function_end_addr - function_start_addr)
-        instructions = process.disassemble_string(function_start_addr, instcode)
-
-        insert_break_at_calls(event, pid, instructions, function_id, function_start_addr, True)
-        
-        
-        #print("ordinal:", pdata_ordinal)
-        #if pdata_ordinal not in(122,) and pdata_ordinal < 120:
-        
-        
-        
-        
-        #if pdata_ordinal == 168:
-        #    break
         
     #process.resume()
     print("inserted calltracing")
@@ -753,6 +772,7 @@ def capstone_2_keystone(instruction_asm):
     return instruction_asm
 
 def add_instruction_redirect(
+    function_ordinal: int,
     function_address: int,
     is_init: bool,
     instructions: List[Tuple[int, int, str, str]],
@@ -774,6 +794,8 @@ def add_instruction_redirect(
     jump_back_address: Optional[int] = None
     
     closer_alocation = False
+    
+    new_start_address = new_instruction_address
     
     assert len(instructions) != 0, "Cant move zero instructions"
     
@@ -859,16 +881,20 @@ def add_instruction_redirect(
         jump_write_address = jump_table_address + len(enter_func_call_code)
         
         
+        #We redirect the return address to capture return, this is not invisible to the code so it may fail, if that is the case disable it
+        #But that also means you wont be able to capture the return. You may be able to put breakpoints on all ret instructions but this will not catch tail calls.
+        redirect_return = True
         
-        
-        function_caller_asm = (
-            int3_bef + # triger interupt for tracing purpose and saving original return address
-            "push rax;" # save value in rax
-            "mov rax, [RIP + 20];" # fill rax with addres leading to new_function_return_address
-            "mov [RSP+8], rax;" # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
-            "pop rax;" # restore rax 
-            "jmp [RIP];" # jump to new_function_start_address
-        )
+        function_caller_asm = [
+            int3_bef, # triger interupt for python tracing enter of function
+            #"int3;", # DEBUG program gets here
+            "push rax;" if redirect_return else "", # save value in rax
+            "mov rax, [RIP + 20];" if redirect_return else "", # fill rax with addres leading to new_function_return_address
+            "mov [RSP+8], rax;" if redirect_return else "", # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
+            "pop rax;" if redirect_return else "", # restore rax 
+            "jmp [RIP];", # jump to new_function_start_address
+        ]
+        function_caller_asm = "\n".join(function_caller_asm)
         
         function_caller = asm(function_caller_asm, jump_write_address)
         new_function_return_address = jump_write_address + len(function_caller)+16
@@ -910,7 +936,6 @@ def add_instruction_redirect(
         instruction_asm = capstone_2_keystone(instruciton_dat[2])
         instruction_parts = instruction_asm.split(" ")
         
-        new_start_address = new_instruction_address
         
         static_call = False
         
@@ -941,18 +966,42 @@ def add_instruction_redirect(
                 reg = reg.lower()
                 if reg_to_use == reg:
                     reg_to_use = 'r11'
-                    
-            #if reg2 is not None:
-            #    print(reg, reg2, reg2_mult, indirect, offset)
-            #    exit()
+            
             
             target_resolver = get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, reg_to_use)
-            print(instruction_asm, target_resolver, reg, reg2, reg2_mult, indirect, offset, reg_to_use, new_instruction_address)
+            print("call info:", "nr:", call_num, "asm:", instruction_asm, "resolver:", target_resolver, "reg dat:", reg, reg2, reg2_mult, indirect, offset, reg_to_use, "new_addr:", new_instruction_address, "old_addr:", instruction_address)
             #exit()
             
+            #DEBUG dfsdffdsfdds REMOVE WHEN DONE oct 7
+            if reg is None and offset is not None and False:
+                if indirect:
+                    dsg_asm = (
+                        f"call [{offset}]\n"
+                        f"jmp {instruction_address+instruction_len}\n"
+                    )
+                else:
+                    dsg_asm = (
+                        f"call {offset}\n"
+                        f"jmp {instruction_address+instruction_len}\n"
+                    )
+
+                    
+                asms = asm(dsg_asm, new_instruction_address)
+                inst = process.disassemble_string(new_instruction_address, asms)
+                disasem = inst[0][2]
+                
+                lreg, lreg2, lreg2_mult, lindirect, loffset = asm2regaddr(inst[0])
+                print("dbg:", instruction_asm, disasem, lreg, lreg2, lreg2_mult, lindirect, loffset)
+                
+                
+                dbg_call_code = asm(dsg_asm, new_instruction_address)
+        
+                
+                code.append(dbg_call_code)
+                new_instruction_address += len(dbg_call_code)
             
             save_target_asm = (
-                "lea rsp, [rsp-8]\n" #make space on the stack #cant use sub or add as that alters flags
+                "lea rsp, [rsp-8]\n" #make space on the stack where we will place the return address
                 f"push {reg_to_use} \n" #Save r9
                 "lea rsp, [rsp+16]\n"
                 f"{target_resolver}\n" #fill r9 with target address # {target_resolver}
@@ -1102,8 +1151,13 @@ def add_instruction_redirect(
             code.append(new_code)
             new_instruction_address += len(new_code)
             
+            #if the calle expects a certain return address set jump_back_address to True, Doing so means you cant track the return which is not good
+            jump_diretly_back = False
             #save the return position
-            new_code = struct.pack("<Q", new_instruction_address+16)
+            if jump_diretly_back:
+                new_code = struct.pack("<Q", jump_back_address)
+            else:
+                new_code = struct.pack("<Q", new_instruction_address+16)
             code.append(new_code)
             new_instruction_address += len(new_code)
             
@@ -1202,36 +1256,67 @@ def add_instruction_redirect(
 
 
 def go_jump_breakpoint(jump_to_address: int, callback: Callable[[Any], None], event: Any) -> None:
-    #print("go_jump_breakpoint", jump_to_address)
+    print("go_jump_breakpoint", jump_to_address)
     event.get_thread().set_pc(jump_to_address)
     callback(event)
 
+def find_jumps_to_address(address):
+    """
+    Return a list of all (offset, instruction) tuples where offset == address.
+    """
+    return [entry for entry in jumps if entry[0] == address]
 
-def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int, do_init: bool) -> None:
+def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int, function_ordinal: int, do_init: bool) -> None:
     """Insert breakpoints at every CALL within a function's instruction list."""
     global shell_code_address_offset
     process = event.get_process()
     
-
+    func_id = get_function_id(function_address)
     
+    if function_address in (140697845009392,140697847417424 ):
+        print("skip instrumenting function:", function_address, func_id)
+        return
+    print("instrumenting:", function_address, func_id)
     call_num = 0
     init_free_space = 0
     doing_init = do_init
+    
     init_instructions = []
     for instruction_num, instruction in enumerate(instructions):
         instruction_name = instruction[2].split(" ")[0]
         instruction_address = instruction[0]
         instruction_len = instruction[1]
         
+        is_jump = instruction_name.startswith("j")
+        
+        search_call = False
+        
         if doing_init:
             do_relocation = False
-            is_jump = instruction_name.startswith("j")
             
+            use_instruction = True
             #if instruction_name == "cmp":
             #    do_relocation = True # Test without things that are cmp
             #else:
-            init_free_space += instruction_len
-            init_instructions.append(instruction)
+            
+            if is_jump:
+                
+                jump_instructions = find_jumps_to_address(instruction_address)
+                if len(jump_instructions) != 0:
+                    if len(init_instructions) != 0: # if we are at the first instruction jumps are not an issue except that the function will be registerd more than one
+                        do_relocation = True
+                        use_instruction = False
+                        print("jump_to_instruction_in_init: (skiping instruction)", jump_instructions)
+                    else:
+                        print("jump_to_first_instruction:", jump_instructions)
+                        doing_init = False # when we have jumps to the first instruction we may destroy the return addresses so we dont trace this entry
+                        search_call = True
+            
+            if use_instruction:
+                init_free_space += instruction_len
+                init_instructions.append(instruction)
+            
+            
             
             #do_relocation = True #If something jumps in to one of the first few instructions uncomment this
             
@@ -1255,6 +1340,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
                 doing_init = False
                 print("relocating_init: ", init_instructions, "cur instruciton:", instruction[2])
                 call_num = add_instruction_redirect(
+                    function_ordinal,
                     function_address,
                     True,
                     init_instructions,
@@ -1263,14 +1349,17 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
                     partial(function_call_break_point, function_id, instruction_address),
                     partial(function_called_break_point, function_id, instruction_address),
                 )
-                
         elif instruction_name == "call":
+            search_call = True
+            
+        if search_call:
             #print("type: callback", instruction[2], instruction_address)
             
             print(instruction)
             
             replace_instructions = [instruction]
             call_num = add_instruction_redirect(
+                function_ordinal,
                 function_address,
                 False,
                 replace_instructions,
@@ -1316,7 +1405,16 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
                 return
                
             moved_addresses = find_moved_instruction(address)
-            print("non-breakpoint EXCEPTION_DEBUG_EVENT:", name, "exception_code:", exception_code, "address:", address, "tid:", tid, "move:", moved_addresses)
+            func_entry = get_function_containing(address)
+            
+            probable_module_name = get_module_from_address(address)
+            
+            print("non-breakpoint EXCEPTION_DEBUG_EVENT:", name, "exception_code:", exception_code, "address:", address, "tid:", tid, "module:", probable_module_name, "move:", moved_addresses, func_entry)
+            debug_reg_dump_break(event) #show registers
+            if func_entry is not None:
+                func_id = get_function_id(func_entry[0])
+                assembly = disassembled_functions[func_entry[3]]
+                print("addres is in:", func_id, "func_asm:", assembly)
             return
 
         # Module load / process start
@@ -1344,7 +1442,7 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
                     create_list_of_functions_to_hook(process)
                     
                     # add a breakpoint on the entry point
-                    event.debug.break_at(pid, exe_entry_address, exe_entry)
+                    #event.debug.break_at(pid, exe_entry_address, exe_entry)
                     breakpoint_active = True
                 
 
@@ -1374,6 +1472,18 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
         traceback.print_stack()
         traceback.print_exc()
         exit()
+
+def get_module_from_address(address):
+    found_module = None
+    found_base = -1
+
+    # Find the module with the highest base that is less than or equal to the address.
+    for module, base in loaded_modules.items():
+        if base <= address and base > found_base:
+            found_module = module
+            found_base = base
+
+    return found_module
 
 def setup_thread_storage(event, tid = None):
     global thread_storage_list_address
@@ -1678,7 +1788,7 @@ def strip_semicolon_comments(asm: str) -> str:
 
     return ''.join(out_lines)
     
-def generate_clean_asm_func_call(code, in_two_parts = False, extra_push = 0):
+def generate_clean_asm_func_call(code, in_two_parts = False, extra_push = 0, save_full=True):
     global register_save_address, thread_storage_list_address
     assembly1 = strip_semicolon_comments("""
     ; ===== prologue: preserve flags & callee-saved registers =====
@@ -1706,7 +1816,7 @@ push r14
 push rbx
 
 
-
+"""+("""
 ; Find thread storage from list
 
 .find_current_thread_location:
@@ -1751,6 +1861,7 @@ xgetbv
 xsave64 [r12]            ; (use xsaveopt if you detect support)
 xor  ecx, ecx
 
+""" if save_full else "")+"""
 
 ; ===== prepare for making the actual code =====
 ; We must ensure RSP is 16-byte aligned at the CALL instruction and have 32 bytes shadow.
@@ -1788,11 +1899,14 @@ je   .no_align_restore
 add  rsp, r10
 .no_align_restore:
 
+"""+("""
+
 ; ===== restore extended state =====
 xor  ecx, ecx
 xgetbv
 xrstor64 [r12]        ; restore extended state from stack buffer
 
+""" if save_full else "")+"""
 
 ; ===== restore saved registers in reverse order =====
 
