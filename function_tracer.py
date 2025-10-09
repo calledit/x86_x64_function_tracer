@@ -99,13 +99,40 @@ ks = Ks(KS_ARCH_X86, KS_MODE_64)
 thread_storage_list_address = None
 thread_storage_list_addresses = {}
 threads_to_setup = []
+area_for_function_table = None
+area_for_return_addr_linked_list = 3*8* 100000#this is how deap the recursion can be traced
+area_for_tracing_results = 8*10000000
+area_for_xsave64 = 12228 #we give xsave 8192 12228 to save its data
 
-use_python_tracing = True
+use_python_tracing = False
 
 spawned = False
 call_trace_dll_ready = False
 load_dll_tid = -1
 jumps = []
+max_thread_ids = 30000
+
+os.makedirs('output', exist_ok=True)
+out_file = None
+
+
+
+forbid_break_point_jumps = True
+
+call_exclusions = [
+    (2666, 0),
+]
+
+enter_exclusions = [
+    2666
+]
+
+function_exclusions = [
+    2666,
+    5471,
+    4725,
+    5788
+]
 
 
 # -----------------------------
@@ -211,7 +238,7 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
 
     # Allocate large RX region for shellcode near code
     size = 0x10000000
-    preferred_address = address_close_to_code - size * 5
+    preferred_address = address_close_to_code - size * 2
     shell_code_address = ctypes.windll.kernel32.VirtualAllocEx(
         process_handle, ctypes.c_void_p(preferred_address), size, 0x3000, 0x40
     )
@@ -222,7 +249,7 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
 
     # Allocate register-save area (writable)
     register_save_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 4096, 0x3000, 0x04)
-    if not register_save_address:
+    if register_save_address == 0:
         print(f"Failed to allocate register_save_address in target process: {ctypes.WinError()}")
         sys.exit(0)
 
@@ -232,13 +259,13 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
     code_injection_address = ctypes.windll.kernel32.VirtualAllocEx(
         process_handle, ctypes.c_void_p(preferred_address), 0x100000, 0x3000, 0x40
     )
-    if not code_injection_address:
+    if code_injection_address == 0:
         print(f"Failed to allocate code_injection_address in target process: {ctypes.WinError()}")
         sys.exit(0)
     
 
-    thread_storage_list_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 100000, 0x3000, 0x04)
-    if not thread_storage_list_address:
+    thread_storage_list_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 8*max_thread_ids, 0x3000, 0x04)
+    if thread_storage_list_address == 0:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
     
 
@@ -414,6 +441,7 @@ def clean_instructions(instructions, process, enter_callback):
 
 def min_hooked_function(function_addres: int, jump_table_address: int, enter_callback: Callable[[Any], None], exit_callback: Callable[[Any], None], event: Any) -> None:
     """Executed after MinHook finishes hooking a function."""
+    raise Exception("dead code")
     thread = event.get_thread()
     context = thread.get_context()
     result = context["Rax"]
@@ -462,6 +490,8 @@ def min_hooked_function(function_addres: int, jump_table_address: int, enter_cal
         f"movabs rax, {call_tracer_dll_func['function_enter_trace_point']};"
         "call    rax;"
     )
+    
+  
     
     enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm), jump_table_address)
     jump_write_address = jump_table_address + len(enter_func_call_code)
@@ -587,7 +617,7 @@ def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: 
         jump_to_after = address
         
         print("running:", len(asm_code_to_run), "then jumping back to:", jump_to_after)
-        jump_to_next = inject_assembly(process, asm_code_to_run, jump_to_after-1)
+        jump_to_next = inject_assembly(process, asm_code_to_run, jump_to_after)
         asm_code_to_run = []
             
         is_in_injected_code = True
@@ -601,7 +631,7 @@ def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: 
 
         # Disable entry breakpoint so it isn't copied while running MinHook
         breakpoint_active = False
-        #event.debug.dont_break_at(pid, exe_entry_address)
+        event.debug.dont_break_at(pid, exe_entry_address)
         event.get_thread().set_pc(jump_to_next)
         return True
     
@@ -628,6 +658,7 @@ def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: 
         return True
     else:
         print("unknown break_point called", tid, address)
+        dump_trace(event, tid)
         debug_reg_dump_break(event)
 
 
@@ -688,14 +719,18 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
     for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
         function_id = get_function_id(function_start_addr)
         
-        fo_init = True
-        if do_init_at < pdata_ordinal:
-            fo_init = False
-            
-        fo_init = True
+        doing_init = True
+        #if do_init_at < pdata_ordinal: ## DEBUG
+        #    doing_init = False         ## DEBUG
+        doing_init = False ## DEBUG
         
-        instructions = disassembled_functions[pdata_ordinal]
-        insert_break_at_calls(event, pid, instructions, function_id, function_start_addr, pdata_ordinal, fo_init)
+        if pdata_ordinal in enter_exclusions:
+            doing_init = False
+        
+        
+        if pdata_ordinal not in function_exclusions:
+            instructions = disassembled_functions[pdata_ordinal]
+            insert_break_at_calls(event, pid, instructions, function_id, function_start_addr, pdata_ordinal, doing_init)
         
         
     #process.resume()
@@ -771,6 +806,8 @@ def capstone_2_keystone(instruction_asm):
     
     return instruction_asm
 
+
+
 def add_instruction_redirect(
     function_ordinal: int,
     function_address: int,
@@ -794,6 +831,11 @@ def add_instruction_redirect(
     jump_back_address: Optional[int] = None
     
     closer_alocation = False
+    excluded_calls = []
+    for exclude_func_ordinal, exlude_call_num in call_exclusions:
+        if exclude_func_ordinal == function_ordinal:
+            excluded_calls.append(exlude_call_num)
+    
     
     new_start_address = new_instruction_address
     
@@ -850,6 +892,11 @@ def add_instruction_redirect(
         jmp_to_shellcode = b"\xCC"
         jump_breakpoint = insert_location + 1
     
+    if forbid_break_point_jumps:
+        if jump_type == "2byte" or jump_type == "1byte":
+            print("trace of function "+str(function_ordinal)+" ignored due to needing breakpoint")
+            return call_num
+    
     if jump_breakpoint is not None:
         assert (jump_breakpoint not in external_breakpoints), "Overwriting old breakpoint"
         external_breakpoints[jump_breakpoint] = partial(go_jump_breakpoint, jump_to_address, dud_func)
@@ -868,16 +915,106 @@ def add_instruction_redirect(
         
         
         
-        enter_asm = (
-            f"movabs rcx, {function_address};"    # first argument 
-            "mov     rdx, r15;"    # second argument, pointer to the return address saved in r15 by generate_clean_asm_func_call
-            "mov     r8, [r15];"   # third argument, the actual return address
-            f"movabs rax, {call_tracer_dll_func['function_enter_trace_point']};"
-            "call    rax;"
-        )
+        
         jump_table_address = new_instruction_address
         
-        enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm), jump_table_address)
+        enter_asm1 = strip_semicolon_comments("""
+        
+add r12, """+str(area_for_xsave64)+"""
+
+;Save tracing
+mov r10, r12
+add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
+
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
+
+mov     byte ptr [r8], 1 ;type 1 is function entry (1 byte)
+mov     eax, dword ptr gs:[0x48]
+mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
+mov     dword ptr [r8 + 5],  """+str(function_ordinal)+""";Save function ordinal(4 bytes)
+rdtsc                 ; EDX:EAX = TSC
+shl     rdx, 32       ; move high half up
+or      rax, rdx      ; RAX = (EDX<<32) | EAX
+mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
+
+mov     qword ptr [r8 + 17], r15 ;save return address pointer/function entry rsp(8 bytes)
+mov     rcx, [r15]              ;
+mov     qword ptr [r8 + 25], rcx ;save return address (8 bytes) 
+lea     r8, [r8+33]
+mov [r10], r8
+
+
+add r10 , """+str(area_for_tracing_results-1000)+"""
+cmp r10, r8    
+ja  .size_ok 
+int3 ; if value is begining to fill table do an intrupt and let python dump the trace
+.size_ok:
+
+
+;Save return addres to linked list for later retrival on function exit
+mov r10, r12
+mov rcx, r12
+
+add r10, """+str(function_ordinal*8)+""" ; This fucntion top
+add rcx, """+str(area_for_function_table)+""" ; Alocation top
+
+
+mov  rdx, [r15] ; New Value (the return address saved in r15 by generate_clean_asm_func_call)
+
+
+; Get top allocation and top entry
+mov    rax, [r10]          ; rax = current_top_node_addr
+mov   r8,  [rcx]          ; r8  = current_top_alocated_addr
+
+test rax,rax
+jnz .list_exists
+;We dont have a list for this function we alocate a new one (The first node in the list will always be empty)
+lea     r8, [r8+24]
+mov     [rcx], r8
+mov     rax, r8
+
+.list_exists:
+
+;See if next node is not allocated yet
+mov   r11, [rax + 16]         ; r11 = node.next
+test    r11, r11
+jnz      .fill_new_entry
+
+;Setup new entry at new location
+;Alloc
+lea     r11, [r8 + 24]
+mov     [rcx], r11
+
+;Set next value on old entry
+mov [rax + 16], r11 ; node.next = r11
+
+;Set previous value on new entry
+mov   [r11 + 0], rax          ; newnode.previous = last_node
+mov   qword ptr  [r11 + 16], 0 ; newnode.next = 0 
+
+
+
+;Fill in value of entry
+.fill_new_entry:
+mov     [r11 + 8], rdx          ; newnode.value = value
+
+;Save current_top_node_addr
+mov     [r10], r11
+
+    """)
+    
+        #lol = asm(enter_asm1, jump_table_address)
+    
+        enter_asm = enter_asm1
+        
+            #f"movabs rcx, {function_ordinal};"    # first argument 
+            #"mov     rdx, r15;"    # second argument, pointer to the return address saved in r15 by generate_clean_asm_func_call
+            #"mov     r8, [r15];"   # third argument, the actual return address
+            #f"movabs rax, {call_tracer_dll_func['function_enter_trace_point']};"
+            #"call    rax;"
+        
+        
+        enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm, save_full=False), jump_table_address)
         jump_write_address = jump_table_address + len(enter_func_call_code)
         
         
@@ -899,13 +1036,66 @@ def add_instruction_redirect(
         function_caller = asm(function_caller_asm, jump_write_address)
         new_function_return_address = jump_write_address + len(function_caller)+16
         
-        exit_asm = (
-            f"movabs rcx, {function_address};"    # first argument 
-            f"movabs rax, {call_tracer_dll_func['function_exit_trace_point']};"
-            "call    rax;"
-            "mov     [r15], rax;" #Restore the original return address that was given by function_exit_trace_point r15 is a pointer to the top of the stack ie what rsp was at the entry of the fuction
-        )
-        exit_func_call_code = asm("lea rsp, [rsp-8];"+generate_clean_asm_func_call(exit_asm), jump_table_address)
+        exit_asm1 = strip_semicolon_comments("""
+        
+add r12, """+str(area_for_xsave64)+"""
+
+;Save tracing
+mov r10, r12
+add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
+
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
+
+mov     byte ptr [r8], 2 ;type 2 is function exit (1 byte)
+mov     eax, dword ptr gs:[0x48]
+mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
+mov     dword ptr [r8 + 5],  """+str(function_ordinal)+""";Save function ordinal(4 bytes)
+rdtsc                 ; EDX:EAX = TSC
+shl     rdx, 32       ; move high half up
+or      rax, rdx      ; RAX = (EDX<<32) | EAX
+mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
+
+lea     r8, [r8+17]
+mov [r10], r8
+
+add r10 , """+str(area_for_tracing_results-1000)+"""
+cmp r10, r8   
+ja  .size_ok 
+int3 ; if value is begining to fill table do an intrupt and let python dump the trace
+.size_ok:
+
+
+
+add r12, """+str(function_ordinal*8)+"""
+
+mov     r11, qword ptr [r12]       ; r11 = current_top_node_addr
+
+test    r11, r11
+jz      .pop_empty                 ; if nothing, return 0 (leave [r12] unchanged)
+
+mov     rax, qword ptr [r11 + 8]   ; rax = top->value
+mov     r11, qword ptr [r11 + 0]   ; r11 = top->prev
+mov     qword ptr [r12], r11       ; new top = prev
+jmp     .pop_done
+
+.pop_empty:
+xor     rax, rax                   ; rax = 0
+
+.pop_done:
+;int3
+mov     [r15], rax
+    """)
+        
+        exit_asm = exit_asm1
+        #(
+        #    exit_asm1 #has to be first as i depend on r12
+            #f"movabs rcx, {function_ordinal};"    # first argument 
+            #f"movabs rax, {call_tracer_dll_func['function_exit_trace_point']};"
+            #"call    rax;"
+            
+            #"mov     [r15], rax;" #Restore the original return address that was given by function_exit_trace_point r15 is a pointer to the top of the stack ie what rsp was at the entry of the fuction
+        #)
+        exit_func_call_code = asm("lea rsp, [rsp-8];"+generate_clean_asm_func_call(exit_asm, save_full=False), jump_table_address)
         
         final_jump_code = asm("ret", jump_table_address + len(exit_func_call_code))
         
@@ -944,7 +1134,7 @@ def add_instruction_redirect(
         if "rip" in instruction_asm:
             contains_rip = True
         
-        if instruction_parts[0] == "call":
+        if instruction_parts[0] == "call" and call_num not in excluded_calls:
             reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruciton_dat)
 
             
@@ -1011,14 +1201,45 @@ def add_instruction_redirect(
             )
             
             call_asm = (
-                f"movabs     rcx, {function_address};"    # first argument function_address
+                f"movabs     rcx, {function_ordinal};"    # first argument function_address
                 f"movabs     rdx, {instruction_address};"    # second argument call_address
                 f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
                 f"mov     r9, [r15-8];"# forth arg target address # original rsp in rax, saved in r15 by generate_clean_asm_func_call the next value in the stack is filled in by save_target_asm which is what we reference here
                 f"movabs     rax, {call_tracer_dll_func['function_call_trace_point']};"
-                "call    rax;"
             )
             #print(call_asm)
+            
+            call_asm = strip_semicolon_comments("""
+add r12, """+str(area_for_xsave64)+"""
+
+;Save tracing
+mov r10, r12
+add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
+
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
+
+mov     byte ptr [r8], 3 ;type 3 is function call (1 byte)
+mov     eax, dword ptr gs:[0x48]
+mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
+mov     dword ptr [r8 + 5],  """+str(function_ordinal)+""";Save function ordinal(4 bytes)
+rdtsc                 ; EDX:EAX = TSC
+shl     rdx, 32       ; move high half up
+or      rax, rdx      ; RAX = (EDX<<32) | EAX
+mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
+
+mov     dword ptr [r8 + 17], """+str(call_num)+""" ;save call num (4 bytes)
+mov     rax, [r15-8] ;  arg target address # original rsp in rax, saved in r15 by generate_clean_asm_func_call the next value in the stack is filled in by save_target_asm which is what we reference here
+mov     qword ptr [r8 + 21], rax ;save raget_address (8 bytes)
+lea     r8, [r8+29]
+mov [r10], r8
+
+
+add r10 , """+str(area_for_tracing_results-1000)+"""
+cmp r10, r8
+ja  .size_ok 
+int3 ; if value is begining to fill table do an intrupt and let python dump the trace
+.size_ok:
+            """)
             
             
             
@@ -1035,7 +1256,7 @@ def add_instruction_redirect(
             #print("target_asm", save_target_asm)
             #exit()
             
-            call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm, extra_push = extra_push) + extra_pop, new_instruction_address)
+            call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm, extra_push = extra_push, save_full=False) + extra_pop, new_instruction_address)
             #call_func_call_code = b""
             #exit()
             
@@ -1210,31 +1431,63 @@ def add_instruction_redirect(
         
         
         if instruction_parts[0] == "call":
-            if use_python_tracing:
-                # Add exit breakpoint and final jump back to original flow
-                code.append(b"\xCC")
-                new_instruction_address += 1
-                break_point_exit = new_instruction_address
-                assert (break_point_exit not in external_breakpoints), "Overwriting old breakpoint"
-                external_breakpoints[break_point_exit] = partial(exit_callback, call_num)
-            
-            
-            #function_called_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address);
-            call_asm = (
-                f"movabs     rcx, {function_address};"    # first argument function_address
-                f"movabs     rdx, {instruction_address};"    # second argument call_address
-                f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
-                f"movabs     rax, {call_tracer_dll_func['function_called_trace_point']};"
-                "call    rax;"
-            )
-            
-            call_func_called_code = asm(generate_clean_asm_func_call(call_asm), new_instruction_address)
-            #call_func_called_code = b""
-            
-            code.append(call_func_called_code)
-            new_instruction_address += len(call_func_called_code)
-            
-            
+            if call_num not in excluded_calls:
+                
+                if use_python_tracing:
+                    # Add exit breakpoint and final jump back to original flow
+                    code.append(b"\xCC")
+                    new_instruction_address += 1
+                    break_point_exit = new_instruction_address
+                    assert (break_point_exit not in external_breakpoints), "Overwriting old breakpoint"
+                    external_breakpoints[break_point_exit] = partial(exit_callback, call_num)
+                
+                
+                #function_called_trace_point(uint64_t function_num, uint64_t call_address, uint64_t return_address);
+                call_asm = (
+                    f"movabs     rcx, {function_ordinal};"    # first argument function_address
+                    f"movabs     rdx, {instruction_address};"    # second argument call_address
+                    f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
+                    f"movabs     rax, {call_tracer_dll_func['function_called_trace_point']};"
+                    "call    rax;"
+                )
+                
+                call_asm = strip_semicolon_comments("""
+                add r12, """+str(area_for_xsave64)+"""
+
+;Save tracing
+mov r10, r12
+add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
+
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
+
+mov     byte ptr [r8], 4 ;type 4 is function called (1 byte)
+mov     eax, dword ptr gs:[0x48]
+mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
+mov     dword ptr [r8 + 5],  """+str(function_ordinal)+""";Save function ordinal(4 bytes)
+rdtsc                 ; EDX:EAX = TSC
+shl     rdx, 32       ; move high half up
+or      rax, rdx      ; RAX = (EDX<<32) | EAX
+mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
+
+mov     dword ptr [r8 + 17], """+str(call_num)+""" ;save call num (4 bytes)
+lea     r8, [r8+21]
+mov [r10], r8
+
+
+add r10 , """+str(area_for_tracing_results-1000)+"""
+cmp r10, r8
+ja  .size_ok 
+int3 ; if value is begining to fill table do an intrupt and let python dump the trace
+.size_ok:
+                """)
+                
+                call_func_called_code = asm(generate_clean_asm_func_call(call_asm, save_full=False), new_instruction_address)
+                #call_func_called_code = b""
+                
+                code.append(call_func_called_code)
+                new_instruction_address += len(call_func_called_code)
+                
+                
             
             call_num += 1
         
@@ -1280,6 +1533,8 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
     call_num = 0
     init_free_space = 0
     doing_init = do_init
+    
+    
     
     init_instructions = []
     for instruction_num, instruction in enumerate(instructions):
@@ -1378,7 +1633,7 @@ def find_moved_instruction(address):
 
 def on_debug_event(event: Any, reduce_address: bool = False) -> None:
     """Main WinAppDbg event callback."""
-    global exe_basic_name, loaded_modules, exe_entry_address, allocate_and_inject_dll, breakpoint_active
+    global exe_basic_name, loaded_modules, exe_entry_address, allocate_and_inject_dll, breakpoint_active, lowest_tid_id, out_file
 
     try:
         
@@ -1410,11 +1665,22 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
             probable_module_name = get_module_from_address(address)
             
             print("non-breakpoint EXCEPTION_DEBUG_EVENT:", name, "exception_code:", exception_code, "address:", address, "tid:", tid, "module:", probable_module_name, "move:", moved_addresses, func_entry)
+            
+            #Not sure if we need to dump here but we do anyways
+            for list_entry_tid, thread_storage_address in thread_storage_list_addresses.items():
+                dump_trace(event, tid)
+            
             debug_reg_dump_break(event) #show registers
             if func_entry is not None:
                 func_id = get_function_id(func_entry[0])
                 assembly = disassembled_functions[func_entry[3]]
                 print("addres is in:", func_id, "func_asm:", assembly)
+            
+            try:
+                instructions = process.disassemble(address, 20)
+                print("instructions:", instructions)
+            except Exception as e:
+                print("failed to disassemble at exception address")
             return
 
         # Module load / process start
@@ -1442,15 +1708,23 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
                     create_list_of_functions_to_hook(process)
                     
                     # add a breakpoint on the entry point
-                    #event.debug.break_at(pid, exe_entry_address, exe_entry)
+                    event.debug.break_at(pid, exe_entry_address, exe_entry)
                     breakpoint_active = True
                 
-
+        if name == "Process termination event":
+            #all threads should have already closed but we do this anyway
+            for list_entry_tid, thread_storage_address in thread_storage_list_addresses.items():
+                dump_trace(event, tid)
         if name == "Process creation event":
             filename = event.get_filename()
             basic = get_base_name(filename)
             exe_basic_name = basic
+            out_file = 'output'+os.sep+exe_basic_name+'.trace'
+            if os.path.exists(out_file):
+                os.remove(out_file)
             base_addr = event.get_module_base()
+            
+            
             get_pdata(filename, base_addr, exe_basic_name)
             print("Process started", "exe_basic_name:", exe_basic_name, "pc:", address, "base_addr:", base_addr, "entry:", exe_entry_address, "main thread:", tid, "bits:", bits)
 
@@ -1464,29 +1738,24 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
         if name == "Thread termination event":
             if load_dll_tid != -1 and tid == load_dll_tid:
                 on_calltrace_dll_ready(event)
+            dump_trace(event, tid)
         
         #print("event_name", name)
     except Exception as e:
+        
+        #we quit save all traces
+        for list_entry_tid, thread_storage_address in thread_storage_list_addresses.items():
+            dump_trace(event, tid)
+            
         print("got error")
         print(e)
         traceback.print_stack()
         traceback.print_exc()
         exit()
 
-def get_module_from_address(address):
-    found_module = None
-    found_base = -1
-
-    # Find the module with the highest base that is less than or equal to the address.
-    for module, base in loaded_modules.items():
-        if base <= address and base > found_base:
-            found_module = module
-            found_base = base
-
-    return found_module
 
 def setup_thread_storage(event, tid = None):
-    global thread_storage_list_address
+    global thread_storage_list_address, area_for_function_table, area_for_return_addr_linked_list
     
     if tid is None:
         tid = event.get_tid()
@@ -1501,16 +1770,33 @@ def setup_thread_storage(event, tid = None):
             
     if thread_storage_list_address is not None and tid not in thread_storage_list_addresses:
         
-        thread_storage_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 20000, 0x3000, 0x04)
+        
+        if area_for_function_table is None:
+            nr_of_functions = len(pdata)
+            area_for_function_table = nr_of_functions*8+1#(we add  one just in case i dont remember if ordinal was zero or one indexed)
+            
+        
+        thread_storage_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list + area_for_tracing_results, 0x3000, 0x04)
         print("setup storage for new thread", tid, thread_storage_address)
         if not thread_storage_address:
             raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
-        new_offeset = len(thread_storage_list_addresses) * (8 + 4)
-        address_to_list_position = thread_storage_list_address + new_offeset
+            
+        #We place a reference to the alocated thread memmory at a specific ofset based on the tid
+        if tid > max_thread_ids:
+            raise Exception("thread id ("+str(tid)+") to large , have only alocated enogh memmory for "+str(max_thread_ids)+" threads")
+        thred_id_mem_location = thread_storage_list_address + (tid * 8)
         
-        list_entry = struct.pack("<I", tid) + struct.pack("<Q", thread_storage_address)
+        print("thred_id_mem_location:", thred_id_mem_location)
+        list_entry = struct.pack("<Q", thread_storage_address)
         
-        process.write(address_to_list_position, list_entry)
+        process.write(thred_id_mem_location, list_entry)
+        
+        linked_list_entr = thread_storage_address + area_for_xsave64 + area_for_function_table 
+        process.write(linked_list_entr, struct.pack("<Q", linked_list_entr))
+        
+        #setup tracing memory area
+        begining_of_trace_area = linked_list_entr+area_for_return_addr_linked_list
+        process.write(begining_of_trace_area, struct.pack("<Q", begining_of_trace_area+8))
         
         thread_storage_list_addresses[tid] = thread_storage_address
     
@@ -1520,6 +1806,26 @@ def setup_thread_storage(event, tid = None):
         setup_thread = threads_to_setup.pop()
         return setup_thread_storage(event, tid = setup_thread)
 
+
+def dump_trace(event, tid = None):
+    if tid is None:
+        tid = event.get_tid()
+    process = event.get_process()
+    
+    if thread_storage_list_address is not None and tid in thread_storage_list_addresses:
+        thread_storage_address = thread_storage_list_addresses[tid]
+        begining_of_trace_area = thread_storage_address + area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list
+        end_of_trace_data = read_ptr(process, begining_of_trace_area)
+        trace_data_addr = begining_of_trace_area+8
+        trace_data_len = end_of_trace_data-trace_data_addr
+        if trace_data_len != 0:
+            trace_data = process.read(trace_data_addr, trace_data_len)
+            
+            with open(out_file, "ab") as f:
+                f.write(trace_data)
+            
+            #reset trace db
+            process.write(begining_of_trace_area, struct.pack("<Q", trace_data_addr))
 # -----------------------------
 # Trace printing callbacks
 # -----------------------------
@@ -1816,42 +2122,20 @@ push r14
 push rbx
 
 
-"""+("""
+
 ; Find thread storage from list
 
 .find_current_thread_location:
-    ; load current thread id (low 32 bits of GS:[0x48])
-    mov     eax, dword ptr gs:[0x48]    ; EAX = current TID
+; load current thread id (low 32 bits of GS:[0x48])
+mov     eax, dword ptr gs:[0x48]    ; EAX = current TID
+xor r12,r12
+lea r12, [eax*8] ; fix offset
+; base pointer to the array
+movabs  rsi, """+str(thread_storage_list_address)+"""           ; RSI = array base
+add r12, rsi
+mov r12, [r12]
 
-    ; base pointer to the array
-    movabs  rsi, """+str(thread_storage_list_address)+"""           ; RSI = array base
-
-.loop:
-    mov     edx, dword ptr [rsi]        ; EDX = entry.thread_id
-    mov     rcx, qword ptr [rsi + 4]    ; RCX = entry.memory_location
-
-    test    rcx, rcx
-    je      .not_found                  ; if memory_location == 0,  end-of-list
-
-    cmp     edx, eax
-    je      .found                      ; match: return memory_location in RAX
-
-    add     rsi, 12                     ; advance to next entry (12 bytes)
-    jmp     .loop
-
-    
-.not_found:
-    nop
-
-.found:
-    mov     rax, rcx                    ; return matching memory_location
-
-
-
-
-
-mov r12, rax
-
+"""+("""
 
 ; set mask: XCR0 -> EDX:EAX, ECX must be 0
 xor  ecx, ecx
