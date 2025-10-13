@@ -44,6 +44,7 @@ from functools import partial
 from keystone import Ks, KS_ARCH_X86, KS_MODE_64, KsError
 from typing import Dict, List, Tuple, Optional, Callable, Any
 import traceback
+import random
 
 # -----------------------------
 # Globals / State
@@ -109,13 +110,15 @@ use_python_tracing = False
 spawned = False
 call_trace_dll_ready = False
 load_dll_tid = -1
-jumps = []
+jumps = {}
 max_thread_ids = 30000
 
 os.makedirs('output', exist_ok=True)
 out_file = None
 
+call_map = []
 
+exe_basic_name = None
 
 forbid_break_point_jumps = False
 
@@ -131,18 +134,12 @@ enter_exclusions = [
 ]
 
 function_exclusions = [
-    2666,
-    5788,
-    5751,
-    5215,
-    8027,
-    #5750
-    #5713, #this function fails
-    #2666,
-    #5722,
-    #5471,
-    #4725,
-    #5788
+    #2666, #NOTEPAD++
+    #5788, #NOTEPAD++
+    #5751, #NOTEPAD++
+    #5215, #NOTEPAD++
+    #8027, #NOTEPAD++
+
 ]
 
 
@@ -251,16 +248,18 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
     remote_memory = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 1000, 0x3000, 0x04)
     if not remote_memory:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
-
-    # Allocate large RX region for shellcode near code
+    
     size = 0x10000000
-    preferred_address = address_close_to_code - size * 2
-    shell_code_address = ctypes.windll.kernel32.VirtualAllocEx(
-        process_handle, ctypes.c_void_p(preferred_address), size, 0x3000, 0x40
-    )
-    if shell_code_address == 0:
-        print("Could not allocate jump table; this can be somewhat random. Please try again.")
-        sys.exit(0)
+    shell_code_address = 0
+    while shell_code_address == 0:
+        # Allocate large RX region for shellcode near code
+        
+        preferred_address = (address_close_to_code - size* random.randint(1, 3))
+        shell_code_address = ctypes.windll.kernel32.VirtualAllocEx(
+            process_handle, ctypes.c_void_p(preferred_address), size, 0x3000, 0x40
+        )
+        if shell_code_address == 0:
+            print("Could not allocate jump table; this can be somewhat random. Please try again.")
 
 
     # Allocate register-save area (writable)
@@ -269,15 +268,17 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
         print(f"Failed to allocate register_save_address in target process: {ctypes.WinError()}")
         sys.exit(0)
 
-    # Allocate secondary RX region for injected stub code
-    preferred_address = address_close_to_code - size * 10
+    size = 0x10000000
+    code_injection_address = 0
+    while code_injection_address == 0:
+        # Allocate secondary RX region for injected stub code
+        preferred_address = address_close_to_code - size * random.randint(1, 20)
 
-    code_injection_address = ctypes.windll.kernel32.VirtualAllocEx(
-        process_handle, ctypes.c_void_p(preferred_address), 0x100000, 0x3000, 0x40
-    )
-    if code_injection_address == 0:
-        print(f"Failed to allocate code_injection_address in target process: {ctypes.WinError()}")
-        sys.exit(0)
+        code_injection_address = ctypes.windll.kernel32.VirtualAllocEx(
+            process_handle, ctypes.c_void_p(preferred_address), 0x100000, 0x3000, 0x40
+        )
+        if code_injection_address == 0:
+            print(f"Failed to allocate code_injection_address in target process: {ctypes.WinError()}")
     
 
     thread_storage_list_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 8*max_thread_ids, 0x3000, 0x04)
@@ -611,7 +612,7 @@ def get_function_containing(address):
 
 def hook_calls(process: Any, event: Any, pid: int) -> None:
     """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
-    global disassembled_functions
+    global disassembled_functions, function_map
     # Cache to avoid repeated disassembly of large binaries
     
     disassembled_cache_file = exe_basic_name + "_instructions_cache.json"
@@ -621,31 +622,43 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
             with open(disassembled_cache_file, "r") as f:
                 disassembled_functions = json.load(f)
     
-    print("disassemble and index instructions")
+    print("disassemble and index instructions", len(pdata_functions))
     for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
         function_id = get_function_id(function_start_addr)
+        func_len = function_end_addr - function_start_addr
+        print("disassemble:", function_id, "len:", func_len)
         
         # Disassemble and patch CALL instructions in the function body
         if len(disassembled_functions) > pdata_ordinal:
             instructions = disassembled_functions[pdata_ordinal]
         else:
-            instcode = process.read(function_start_addr, function_end_addr - function_start_addr)
-            instructions = process.disassemble_string(function_start_addr, instcode)
+            try:
+                instcode = process.read(function_start_addr, func_len)
+                instructions = process.disassemble_string(function_start_addr, instcode)
+            except:
+                instructions = [] #DEBUG shit for disasemble failures
+            
             disassembled_functions.append(instructions)
             save_cache = True
         
         #try to find jumps so we know what jumps backward and to some extent where
         for instruction_num, instruction in enumerate(instructions):
             instruction_name = instruction[2].split(" ")[0]
-            is_jump = instruction_name.startswith("j")
+            is_jump = instruction_name.startswith("j") or instruction_name.startswith("loop")
             
             if is_jump:
                 reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruction)
                 jump_to = None
                 if reg is None:
                     jump_to = offset
-                jumps.append((offset, instruction))
+                
+                if offset not in jumps:
+                    jumps[offset] = []
+                jumps[offset].append(instruction)
     
+    if save_cache:
+        with open(disassembled_cache_file, "w") as f:
+            json.dump(disassembled_functions, f, indent=2)
     
     print("instrument functions:", len(pdata_functions))
     do_init_at = 100
@@ -661,23 +674,34 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
         if pdata_ordinal in enter_exclusions:
             doing_init = False
         
+        function_map = {
+            "ordinal": pdata_ordinal,
+            "function_id":function_id,
+            "function_start_addr": function_start_addr,
+            "function_end_addr": function_end_addr,
+            "calls": []
+        }
         
         if pdata_ordinal not in function_exclusions:
             instructions = disassembled_functions[pdata_ordinal]
             insert_break_at_calls(event, pid, instructions, function_id, function_start_addr, pdata_ordinal, doing_init)
         
+        call_map.append(function_map)
         
     #process.resume()
     print("inserted calltracing")
     
-    if save_cache:
-        with open(disassembled_cache_file, "w") as f:
-            json.dump(disassembled_functions, f)
+    map_file = "output\\"+exe_basic_name+'_map.json'
+    with open(map_file, "w") as f:
+            json.dump(call_map, f, indent=2)
+    
+    
 
 
 def create_list_of_functions_to_hook(process) -> None:
     """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
     global disassembled_functions
+    raise Exception("DEAD CODE")
     # Cache to avoid repeated disassembly of large binaries
     
     disassembled_cache_file = exe_basic_name + "_instructions_cache.json"
@@ -737,6 +761,17 @@ def capstone_2_keystone(instruction_asm):
     
     if instruction_asm.startswith("comisd "):
         instruction_asm = instruction_asm.replace(' xmmword ptr [', ' qword ptr [')
+    
+    if instruction_asm.startswith("call ptr cs:"):
+        instruction_asm = instruction_asm.replace('call ptr cs:', 'call qword ptr ')
+        
+    if instruction_asm.startswith("call ptr "):
+        instruction_asm = instruction_asm.replace('call ptr ', 'call qword ptr ')
+    
+    if instruction_asm.startswith("jmp ptr "):
+        instruction_asm = instruction_asm.replace('jmp ptr ', 'jmp qword ptr ')
+        
+    
     
     return instruction_asm
 
@@ -1096,9 +1131,30 @@ mov     [r15-100], rax
         contains_rip = False
         if "rip" in instruction_asm:
             contains_rip = True
+            
+        if instruction_parts[0] == "call":
+            reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruciton_dat)
+            
+            call_info = {
+                "address": instruction_address,
+                "return_address": instruction_address + instruction_len,
+                "asm": instruction_asm,
+                "indirect": indirect,
+            }
+            if (reg is None or (reg is not None and reg.lower() == "rip")) and offset is not None:
+                if not indirect:
+                    rip_to = offset
+                    call_info['target'] = rip_to
+                else:
+                    call_info['target_pointer'] = offset
+                    try:
+                        trg = read_ptr(process, offset)
+                    except:
+                        trg = None
+                    call_info['target'] = trg
+                    
         
         if instruction_parts[0] == "call" and call_num not in excluded_calls and do_call_tracing:
-            reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruciton_dat)
 
             
             #jump_back_address = instruction_address + instruction_len
@@ -1163,13 +1219,13 @@ mov     [r15-100], rax
                 f"pop {reg_to_use}\n" #restore r9
             )
             
-            call_asm = (
-                f"movabs     rcx, {function_ordinal};"    # first argument function_address
-                f"movabs     rdx, {instruction_address};"    # second argument call_address
-                f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
-                f"mov     r9, [r15-8];"# forth arg target address # original rsp in rax, saved in r15 by generate_clean_asm_func_call the next value in the stack is filled in by save_target_asm which is what we reference here
-                f"movabs     rax, {call_tracer_dll_func['function_call_trace_point']};"
-            )
+            #call_asm = (
+            #    f"movabs     rcx, {function_ordinal};"    # first argument function_address
+            #    f"movabs     rdx, {instruction_address};"    # second argument call_address
+            #    f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
+            #    f"mov     r9, [r15-8];"# forth arg target address # original rsp in rax, saved in r15 by generate_clean_asm_func_call the next value in the stack is filled in by save_target_asm which is what we reference here
+            #    f"movabs     rax, {call_tracer_dll_func['function_call_trace_point']};"
+            #)
             #print(call_asm)
             
             call_asm = strip_semicolon_comments("""
@@ -1241,8 +1297,7 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
                 static_call = offset
                 # RIP-relative handling
                 
-            if (reg is None or (reg is not None and reg.lower() == "rip")) and offset is not None:
-                rip_to = offset
+            
             
         
         else: #Not a call
@@ -1274,15 +1329,22 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
                 
                 rip_to = instruction_address + instruction_len + off
                 
-
+                if instruct_off >= 0:
+                    replace_arg = "rip + "+ str(instruct_off)
+                else:
+                    replace_arg = "rip "+ str(instruct_off)
                 
-                instruction_asm_test = instruction_asm.replace(arg_part, "rip + "+ str(instruct_off))
+                instruction_asm_test = instruction_asm.replace(arg_part, replace_arg)
                 
                 new_code = asm(instruction_asm_test, new_instruction_address)
                 new_code_len = len(new_code)
                 if instruction_len != new_code_len:
                     instruct_off -= (new_code_len - instruction_len)
-                    instruction_asm_test = instruction_asm.replace(arg_part, "rip + "+ str(instruct_off))
+                    if instruct_off >= 0:
+                        replace_arg = "rip + "+ str(instruct_off)
+                    else:
+                        replace_arg = "rip "+ str(instruct_off)
+                    instruction_asm_test = instruction_asm.replace(arg_part, replace_arg)
                     
                 instruction_asm = instruction_asm_test
 
@@ -1294,7 +1356,7 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
             if (reg is None or (reg is not None and reg.lower() == "rip")) and offset is not None:
                 rip_to = offset
         
-        if is_jump and rip_to is not None:
+        if is_jump and rip_to is not None and not indirect:
             if rip_to in pdata_function_ids:
                 print("jump to function with address: "+ str(rip_to))
             else:
@@ -1408,13 +1470,13 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
                 
                 
                 #function_called_trace_point(uint64_t function_num, uint64_t call_address, uint64_t return_address);
-                call_asm = (
-                    f"movabs     rcx, {function_ordinal};"    # first argument function_address
-                    f"movabs     rdx, {instruction_address};"    # second argument call_address
-                    f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
-                    f"movabs     rax, {call_tracer_dll_func['function_called_trace_point']};"
-                    "call    rax;"
-                )
+                #call_asm = (
+                #    f"movabs     rcx, {function_ordinal};"    # first argument function_address
+                #    f"movabs     rdx, {instruction_address};"    # second argument call_address
+                #    f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
+                #    f"movabs     rax, {call_tracer_dll_func['function_called_trace_point']};"
+                #    "call    rax;"
+                #)
                 
                 call_asm = strip_semicolon_comments("""
                 add r12, """+str(area_for_xsave64)+"""
@@ -1452,8 +1514,9 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
                 code.append(call_func_called_code)
                 new_instruction_address += len(call_func_called_code)
                 
-                
             
+            call_info['call_num'] = call_num
+            function_map['calls'].append(call_info)
             call_num += 1
         
         moved_instructions[instruction_address] = (new_start_address, new_instruction_address)
@@ -1482,7 +1545,9 @@ def find_jumps_to_address(address):
     """
     Return a list of all (offset, instruction) tuples where offset == address.
     """
-    return [entry for entry in jumps if entry[0] == address]
+    if address in jumps:
+        return jumps[address]
+    return []
 
 def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int, function_ordinal: int, do_init: bool) -> None:
     """Insert breakpoints at every CALL within a function's instruction list."""
@@ -1491,9 +1556,9 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
     
     func_id = get_function_id(function_address)
     
-    if function_address in (140697845009392,140697847417424 ):
-        print("skip instrumenting function:", function_address, func_id)
-        return
+    #if function_address in (140697845009392,140697847417424 ):
+    #    print("skip instrumenting function:", function_address, func_id)
+    #    return
     print("instrumenting:", function_address, func_id)
     call_num = 0
     init_free_space = 0
@@ -1509,7 +1574,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
         instruction_address = instruction[0]
         instruction_len = instruction[1]
         
-        is_jump = instruction_name.startswith("j")
+        is_jump = instruction_name.startswith("j") or instruction_name.startswith("loop")
         
         search_call = False
         
@@ -1531,6 +1596,21 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
                     use_instruction = False
                     print("jump_to_instruction_in_init: (skiping instruction)", jump_instructions)
             
+            #loop instructions are short max 127 bytes so cant be moved
+            if instruction_name.startswith("loop"):
+                if len(init_instructions) == 0:
+                    doing_init = False
+                else:
+                    use_instruction = False
+                    do_relocation = True
+            
+            if instruction_name == "db":
+                if len(init_instructions) == 0:
+                    doing_init = False #if first instruction is not a instruction this is not a true function we just skip this
+                else:
+                    do_relocation = True
+                    use_instruction = False
+            
             if use_instruction:
                 init_free_space += instruction_len
                 init_instructions.append(instruction)
@@ -1547,8 +1627,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
             #if "rip" in instruction[2]:
             #    doing_init = False # Test without things that contain RIP
             
-            #if instruction_name == "call":
-            #    doing_init = False # Test without things that are calls
+            
             
             #if instruction_name == "cmp":
             #    doing_init = False # Test without things that are calls
@@ -1573,6 +1652,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
             call_replace_instructions.append(instruction)
             if instruction_name == "call" and do_call_tracing:
                 search_call = True
+        
             
         if search_call:
             
@@ -1580,7 +1660,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
             free_space = 0
             for inst in reversed(call_replace_instructions):
                 inst_name = inst[2].split(" ")[0]
-                if inst_name == 'db':#we cant move db stuff we have no idea what they are
+                if inst_name == 'db' or inst_name.startswith("loop"):#we cant move db stuff we have no idea what they are and we cant move loops as they can only jmp 127 bytes(i guesss we could implment them as "dec rcx jnz .loop")
                     break
                 free_space += inst[1]
                 replace_instructions.append(inst)
@@ -1610,6 +1690,29 @@ def find_moved_instruction(address):
         if new_start <= address < new_end:
             results.append((org_addr, new_start, new_end))
     return results
+    
+
+def on_debug_event_debug(event: Any, reduce_address: bool = False) -> None:
+    try:
+        
+        
+        pid = event.get_pid()
+        tid = event.get_tid()
+        process = event.get_process()
+        bits = process.get_bits()
+        address = event.get_thread().get_pc()
+
+        name = event.get_event_name()
+        code = event.get_event_code()
+        
+        print(pid, address, name)
+    except Exception as e:
+            
+        print("got error")
+        print(e)
+        traceback.print_stack()
+        traceback.print_exc()
+    
 
 def on_debug_event(event: Any, reduce_address: bool = False) -> None:
     """Main WinAppDbg event callback."""
@@ -1681,6 +1784,11 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
 
             
             loaded_modules[basic_name] = base_addr
+            
+            if exe_basic_name is not None:
+                module_file = "output\\"+exe_basic_name+'_modules.json'
+                with open(module_file, "w") as f:
+                        json.dump(loaded_modules, f, indent=2)
 
             # TODO: Load PDBs if available (not implemented)
 
@@ -1690,7 +1798,8 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
                     allocate_and_inject_dll = False
                     
                     # Hook stuff
-                    create_list_of_functions_to_hook(process)
+                    #create_list_of_functions_to_hook(process)
+                    hook_calls(process, event, pid)
                     
                     # add a breakpoint on the entry point
                     event.debug.break_at(pid, exe_entry_address, exe_entry)
@@ -1931,7 +2040,8 @@ def get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, where):
                         raise ValueError("offset bigger than 2Gb, not implemented when using reg2")
                     return f"lea  {where}, [{reg} + {reg2}*{reg2_mult} + {offset}]\nmov {where}, [{where}]"
                 else:
-                    return f"movabs {where}, {offset}\nlea {where}, [{where} + {reg}]\nmov {where}, [{where}]"
+                    return f"lea  {where}, [{reg} + {offset}]\nmov {where}, [{where}]"
+                    #return f"movabs {where}, {offset}\nlea {where}, [{where} + {reg}]\nmov {where}, [{where}]" #Fails when reg is 32 bit and where is 64
     else:
         if reg is None:
             return f"movabs     {where}, {offset}"
@@ -1942,7 +2052,8 @@ def get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, where):
                 if reg == where:
                     raise ValueError("adding offset to own registry, not implemented")
                 else:
-                    return f"movabs {where}, {offset}\nlea {where}, [{where} + {reg}]"
+                    return f"lea {where}, [{reg} + {offset}]"
+                    #return f"movabs {where}, {offset}\nlea {where}, [{where} + {reg}]"#Fails when reg is 32 bit and where is 64#Fails when reg is 32 bit and where is 64
        
     
     return f"mov {where}, 0"
@@ -1983,7 +2094,7 @@ def asm2regaddr(code: Tuple[int, int, str, str]):
         indirect = True
         mem_expr = asm_text.split("[", 1)[1].split("]", 1)[0].strip()
         mem_parts = mem_expr.split(" ")
-        print(mem_parts)
+        #print(mem_parts)
         if len(mem_parts) == 3:
             reg, op, second = mem_parts[0], mem_parts[1], mem_parts[2]
             if is_reg(second):
@@ -2117,9 +2228,10 @@ push rbx
 
 .find_current_thread_location:
 ; load current thread id (low 32 bits of GS:[0x48])
+xor rax,rax
 mov     eax, dword ptr gs:[0x48]    ; EAX = current TID
 xor r12,r12
-lea r12, [eax*8] ; fix offset
+lea r12, [rax*8] ; fix offset
 ; base pointer to the array
 movabs  rsi, """+str(thread_storage_list_address)+"""           ; RSI = array base
 add r12, rsi
@@ -2311,7 +2423,11 @@ def on_calltrace_dll_ready(event):
     pe = pefile.PE(dll_name)
     basename = os.path.basename(dll_name)
     basic_name, ext = os.path.splitext(basename)
-    base_addr = loaded_modules[basic_name]
+    if basic_name in loaded_modules:
+        base_addr = loaded_modules[basic_name]
+    else:
+        print("calltracer dll not loaded when thread exited")
+        return
 
     if hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
         for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
@@ -2331,7 +2447,8 @@ def on_calltrace_dll_ready(event):
         
         process = event.get_process()
         pid = process.get_pid()
-        hook_calls(process, event, pid)
+    
+    
 
 def loaded_dll(dll_name: str, callback, event: Any) -> None:
     thread = event.get_thread()
@@ -2376,7 +2493,7 @@ def get_pdata(filen: str, base_addr: int, exe_basic_name: str) -> None:
             for i in range(num_entries):
                 entry = pdata_data[i * entry_size : (i + 1) * entry_size]
                 start_addr, end_addr, unwind_info_addr = struct.unpack("<III", entry)
-                if start_addr == 0 and end_addr == 0:
+                if start_addr == 0 and end_addr == 0 or  end_addr-start_addr < 0:
                     break
                 functions.append((start_addr + base_addr, end_addr + base_addr, unwind_info_addr, i))
                 pdata_function_ids[start_addr + base_addr] = exe_basic_name + "_" + str(i)

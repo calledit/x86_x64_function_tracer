@@ -47,3 +47,10 @@ Tracing does add a speed penalty which can be problematic for functions that are
 - Add feature to create a map of all calls.
 - Build tool that analyses a captured trace and builds a call graph.
 - Build tool that uses the call graph to supplement the call map with info about dynamic calls.
+- Remove debugger
+
+## Current issues
+Modern games have anti debug features that kill the game as soon as you attach a debugger.
+calltrace was originally built on features made avalible throgh a debugger so it still attaches with a debugger.
+The debuggger only does a few small things that should be fairly easy to reimplement without a debugger.
+Main things are that the debugger keeps track of breakpoints used for jumps and signalling to python code. It lists loaded modules and it sets up thread local storage for tracing in asm. All those things can be replaced with other functions.
