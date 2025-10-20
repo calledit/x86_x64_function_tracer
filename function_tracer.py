@@ -134,11 +134,12 @@ enter_exclusions = [
 ]
 
 function_exclusions = [
-    #2666, #NOTEPAD++
-    #5788, #NOTEPAD++
-    #5751, #NOTEPAD++
-    #5215, #NOTEPAD++
-    #8027, #NOTEPAD++
+    2666, #NOTEPAD++
+    5788, #NOTEPAD++
+    5751, #NOTEPAD++
+    5215, #NOTEPAD++
+    8027, #NOTEPAD++
+    5596, #NOTEPAD++
 
 ]
 
@@ -229,7 +230,7 @@ def allocate_close(process, address_close_to_code):
 
 def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, address_close_to_code: int) -> None:
     """Allocate remote memory regions and inject the helper DLL."""
-    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address
+    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address
 
     # VirtualAllocEx signature configuration
     ctypes.windll.kernel32.VirtualAllocEx.argtypes = [
@@ -289,6 +290,156 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
     # Inject helper DLL with MinHook-based hooks
     run_loadlibrary_in_process(process_handle, process, "calltracer.dll", on_calltrace_dll_ready)
     
+    #save state requires you to push 128 bytes to rsp before calling lea   rsp, [rsp-128]
+    #Setup save sate and restore state functions
+    #save_state_asm, restore_state_asm = generate_clean_asm_func_call("", in_two_parts = True)
+    
+    #save state function
+    save_state_asm = strip_semicolon_comments("""
+; ===== prologue: preserve flags & callee-saved registers =====
+pushfq
+sub   rsp, 8
+
+; save callee-saved GPRs that we will use or clobber
+push r15
+mov r15, rsp
+add r15, 160; save original return_address stack location in r15 fix ofset 24 caused by earlier pushes and 128 from before call and 8 from the call
+
+push rbp
+push rsi
+push rdi
+push rax
+push rcx
+push rdx
+push r8
+push r9
+push r10          ; r10 used as temp for alignment
+push r11          ; r11 used for size/temp
+push r12
+push r13
+push r14
+push rbx
+
+
+
+; Find thread storage from list
+
+.find_current_thread_location:
+; load current thread id (low 32 bits of GS:[0x48])
+xor rax,rax
+mov     eax, dword ptr gs:[0x48]    ; EAX = current TID
+xor r12,r12
+lea r12, [rax*8] ; fix offset
+; base pointer to the array
+movabs  rsi, """+str(thread_storage_list_address)+"""           ; RSI = array base
+add r12, rsi
+mov r12, [r12]
+
+"""+("""
+
+; set mask: XCR0 -> EDX:EAX, ECX must be 0
+xor  ecx, ecx
+xgetbv
+
+; save extended state; DO NOT use rdx as the memory base (EDX is mask upper)
+xsave64 [r12]            ; (use xsaveopt if you detect support)
+xor  ecx, ecx
+
+""" if False else "")+"""
+
+; ===== prepare for making the actual code =====
+; We must ensure RSP is 16-byte aligned at the CALL instruction and have 32 bytes shadow.
+
+; Compute the adjustment needed to align RSP to 16 bytes:
+; r10 currently saved on stack; we'll use r10 as temp for alignment value
+; r11 currently holds alloc_size but we won't clobber it; use rax/rcx temporarily
+mov  rax, rsp
+and  rax, 15          ; rax = rsp % 16
+xor  r10, r10         ; r10 = 0 (will store correction amount if any)
+test rax, rax
+je   .no_align_needed
+mov  r10, 16
+sub  r10, rax         ; r10 = (16 - (rsp & 15))
+sub  rsp, r10         ; adjust stack to align to 16
+.no_align_needed:
+push r10
+push r15
+push r11
+push r12
+
+; Now allocate the 32-byte shadow space required by Windows x64 ABI
+sub  rsp, 32
+
+
+jmp [r15 - 136] ;Jump back to return address of save call
+    """)
+    
+    save_state_address = shell_code_address
+    save_state_code = asm(save_state_asm, save_state_address)
+    shell_code_address += len(save_state_code)
+    process.write(save_state_address, save_state_code)
+    
+    
+    #restore state function
+    restore_state_asm = strip_semicolon_comments("""
+    
+; ===== after call: pop shadow and undo alignment correction =====
+
+add  rsp, 40 ; Add 32 plus 8 cause we just did this call
+
+pop r12
+pop r11
+pop r15
+
+;Save the return address for this restore call
+mov r10, [rsp-64]
+mov [r15-136], r10
+
+pop r10
+test r10, r10
+je   .no_align_restore
+add  rsp, r10
+.no_align_restore:
+
+"""+("""
+
+; ===== restore extended state =====
+xor  ecx, ecx
+xgetbv
+xrstor64 [r12]        ; restore extended state from stack buffer
+
+""" if False else "")+"""
+
+; ===== restore saved registers in reverse order =====
+
+pop  rbx
+pop  r14
+pop  r13
+pop  r12
+pop  r11
+pop  r10
+pop  r9
+pop  r8
+pop  rdx
+pop  rcx
+pop  rax
+pop  rdi
+pop  rsi
+pop  rbp
+pop  r15
+
+
+add  rsp, 8
+popfq
+
+lea   rsp, [rsp+136] ;restore rsp 128 cause we added that before call + 8 cause of this call
+jmp [rsp - 136] ;jump to restore return address
+""")
+    
+    restore_state_address = shell_code_address
+    restore_state_code = asm(restore_state_asm, restore_state_address)
+    shell_code_address += len(restore_state_code)
+    process.write(restore_state_address, restore_state_code)
 
     process.close_handle()
     
@@ -2196,128 +2347,16 @@ def strip_semicolon_comments(asm: str) -> str:
     
 def generate_clean_asm_func_call(code, in_two_parts = False, extra_push = 0, save_full=True):
     global register_save_address, thread_storage_list_address
-    assembly1 = strip_semicolon_comments("""
-    ; ===== prologue: preserve flags & callee-saved registers =====
-lea   rsp, [rsp-128]
-pushfq
-sub   rsp, 8
-
-; save callee-saved GPRs that we will use or clobber
-
-push r15
-mov r15, rsp
-add r15, """+str(152+extra_push)+"""; save original return_address stack location in r15 fix ofset 24 caused by pushes
-push rbp
-push rsi
-push rdi
-push rax
-push rcx
-push rdx
-push r8
-push r9
-push r10          ; r10 used as temp for alignment
-push r11          ; r11 used for size/temp
-push r12
-push r13
-push r14
-push rbx
-
-
-
-; Find thread storage from list
-
-.find_current_thread_location:
-; load current thread id (low 32 bits of GS:[0x48])
-xor rax,rax
-mov     eax, dword ptr gs:[0x48]    ; EAX = current TID
-xor r12,r12
-lea r12, [rax*8] ; fix offset
-; base pointer to the array
-movabs  rsi, """+str(thread_storage_list_address)+"""           ; RSI = array base
-add r12, rsi
-mov r12, [r12]
-
-"""+("""
-
-; set mask: XCR0 -> EDX:EAX, ECX must be 0
-xor  ecx, ecx
-xgetbv
-
-; save extended state; DO NOT use rdx as the memory base (EDX is mask upper)
-xsave64 [r12]            ; (use xsaveopt if you detect support)
-xor  ecx, ecx
-
-""" if save_full else "")+"""
-
-; ===== prepare for making the actual code =====
-; We must ensure RSP is 16-byte aligned at the CALL instruction and have 32 bytes shadow.
-
-; Compute the adjustment needed to align RSP to 16 bytes:
-; r10 currently saved on stack; we'll use r10 as temp for alignment value
-; r11 currently holds alloc_size but we won't clobber it; use rax/rcx temporarily
-mov  rax, rsp
-and  rax, 15          ; rax = rsp % 16
-xor  r10, r10         ; r10 = 0 (will store correction amount if any)
-test rax, rax
-je   .no_align_needed
-mov  r10, 16
-sub  r10, rax         ; r10 = (16 - (rsp & 15))
-sub  rsp, r10         ; adjust stack to align to 16
-.no_align_needed:
-push r10
-push r10
-push r11
-push r12
-
-; Now allocate the 32-byte shadow space required by Windows x64 ABI
-sub  rsp, 32
-    """) + code.replace(";", "\n") +"\n"
-    assembly2 = strip_semicolon_comments("""
-add  rsp, 32
-    ; ===== after call: pop shadow and undo alignment correction =====
-
-pop r12
-pop r11
-pop r10
-pop r10
-test r10, r10
-je   .no_align_restore
-add  rsp, r10
-.no_align_restore:
-
-"""+("""
-
-; ===== restore extended state =====
-xor  ecx, ecx
-xgetbv
-xrstor64 [r12]        ; restore extended state from stack buffer
-
-""" if save_full else "")+"""
-
-; ===== restore saved registers in reverse order =====
-
-pop  rbx
-pop  r14
-pop  r13
-pop  r12
-pop  r11
-pop  r10
-pop  r9
-pop  r8
-pop  rdx
-pop  rcx
-pop  rax
-pop  rdi
-pop  rsi
-pop  rbp
-pop  r15
-
-
-add  rsp, 8
-popfq
-lea   rsp, [rsp+128]
-
-""")
+    
+    if save_full:
+        raise Exception("save_full not supported any longer")
+    
+    
+    if not save_full:
+        assembly1 = "\nlea rsp, [rsp-128]\ncall " + str(save_state_address) + "\n\n" + code.replace(";", "\n") +"\n"
+    
+    if not save_full:
+        assembly2 = "call " + str(restore_state_address) + "\n"
     if in_two_parts:
         return assembly1, assembly2
     return assembly1 + assembly2
@@ -2389,12 +2428,13 @@ def run_loadlibrary_in_process(h_process: int, process: Any, dll_path: str, call
     """Write dll_path to target and call LoadLibraryA via injected assembly."""
     global load_dll_tid
     dll_path = os.path.abspath(dll_path)
-    if not spawned:
-        print("trying to inject dll")
-        thread = process.inject_dll(dll_path, bWait = False)
-        load_dll_tid = thread.get_tid()
-        print("Not waiting for new dll")
-        return 
+    print("trying to inject dll")
+    thread = process.inject_dll(dll_path, bWait = False)
+    load_dll_tid = thread.get_tid()
+    print("Not waiting for new dll")
+    return 
+    
+    raise Exception("dead code")
     dll_path_bytes = dll_path.encode("ascii") + b"\x00"
 
     ctypes.windll.kernel32.VirtualAllocEx.restype = ctypes.c_ulonglong
