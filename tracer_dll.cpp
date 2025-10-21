@@ -3,26 +3,40 @@
 #include <windows.h>
 #include <intrin.h>
 #include <stdio.h>
-#include "MinHook.h"
 #include <string>
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
+#include <atomic>
+#include <mutex>
 
 extern "C" {
     __declspec(dllexport) void print_to_file(const char* str);
-    __declspec(dllexport) MH_STATUS hook_function(LPVOID pTarget, LPVOID pDetour, LPVOID* ppOriginal);
-    __declspec(dllexport) void enable_hooks();
     __declspec(dllexport) void print_text();
     __declspec(dllexport) uint64_t function_enter_trace_point(uint64_t function_address, uint64_t return_address_pointer, uint64_t return_address);
     __declspec(dllexport) uint64_t function_exit_trace_point(uint64_t function_address);
     __declspec(dllexport) uint64_t function_call_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address, uint64_t target_address);
     __declspec(dllexport) uint64_t function_called_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address);
+    __declspec(dllexport) uint64_t alloc_thread_storage(uint64_t out_address);
+    __declspec(dllexport) uint64_t set_area_for_function_table(uint64_t size);
+    __declspec(dllexport) uint64_t dump_trace(uint64_t thread_storage_address);
+    __declspec(dllexport) uint64_t dump_all_traces();
+    __declspec(dllexport) uint64_t set_output_file(char* file_path);
 }
-void init();
+
+uint64_t area_for_xsave64 = 12228;
+uint64_t area_for_function_table = 0;
+uint64_t area_for_return_addr_linked_list = 3 * 8 * 100000;
+uint64_t area_for_tracing_results = 8 * 10000000;
+
+constexpr uint32_t kMaxAllocations = 65536;     // tune as you like
+
+// Contiguous array of all allocations done by alloc_thread_storage()
+alignas(64) static uint64_t g_allocations[kMaxAllocations] = { 0 };
+// Number of valid entries in g_allocations
+static std::atomic<uint32_t> g_alloc_count{ 0 };
 
 std::string output_buffer_str = "";
-HANDLE current_process;
 
 void bufer_2_file() {
 
@@ -38,7 +52,151 @@ void print(std::string str) {
     }
 }
 
+uint64_t set_area_for_function_table(uint64_t size) {
+    area_for_function_table = size;
+	print(std::string("set_area_for_function_table: ") + std::to_string(size));
+    return 0;
+}
 
+std::string output_file = "";
+
+uint64_t set_output_file(char *file_path) {
+    output_file = std::string(file_path);
+	print(std::string("set_output_file: ") + output_file);
+    return 0;
+}
+
+void init();
+
+
+HANDLE current_process;
+
+std::mutex file_mutex;
+
+uint64_t alloc_thread_storage(uint64_t out_address)
+{
+
+    uint64_t thread_storage_size = area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list + area_for_tracing_results;
+
+    void* p = VirtualAlloc(nullptr, static_cast<SIZE_T>(thread_storage_size),
+        MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    if (!p) {
+        // Optional: log the failure code
+        DWORD err = GetLastError();
+        print(std::string("alloc_thread_storage failed ") + " err=" + std::to_string(err));
+        bufer_2_file();
+        return 0;
+    }
+
+	//Write the thread storage address to the out_address
+    uint64_t thread_storage_address = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(p));
+    uint64_t* out_ptr = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(out_address));
+    *out_ptr = thread_storage_address;
+
+
+	//Setup the linked list entry pointer
+    uint64_t linked_list_entr = thread_storage_address + area_for_xsave64 + area_for_function_table;
+    uint64_t* linked_list_entr_ptr = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(linked_list_entr));
+    *linked_list_entr_ptr = linked_list_entr;
+
+	//Setup the begining of trace area pointer
+    uint64_t begining_of_trace_area = linked_list_entr + area_for_return_addr_linked_list;
+    uint64_t* begining_of_trace_area_ptr = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(begining_of_trace_area));
+    *begining_of_trace_area_ptr = begining_of_trace_area + 8;
+
+
+    uint32_t idx = g_alloc_count.fetch_add(1, std::memory_order_relaxed);
+    if (idx < kMaxAllocations) {
+        g_allocations[idx] = thread_storage_address;
+    }
+    else {
+        // Optional:  log if you overflow the buffer
+        print("alloc_thread_storage: g_allocations is full");
+        bufer_2_file();
+        // keep the allocation; just not tracked in the array
+    }
+
+    return 1;
+}
+
+uint64_t dump_trace(uint64_t thread_storage_address)
+{
+    if (thread_storage_address == 0)
+        return 0;
+
+    // Compute derived addresses (same layout as Python)
+    uint64_t begining_of_trace_area =
+        thread_storage_address +
+        area_for_xsave64 +
+        area_for_function_table +
+        area_for_return_addr_linked_list;
+
+    // Read end-of-trace pointer (stored at *begining_of_trace_area)
+    uint64_t end_of_trace_data = *reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(begining_of_trace_area));
+
+    uint64_t trace_data_addr = begining_of_trace_area + 8;
+    int64_t trace_data_len = static_cast<int64_t>(end_of_trace_data - trace_data_addr);
+
+    if (trace_data_len < 0) {
+        print(std::string("SHOULD NEVER HAPPEN dump_trace: empty or invalid trace len=") + std::to_string(trace_data_len));
+        bufer_2_file();
+        // Reset pointer anyway
+        *reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(begining_of_trace_area)) = trace_data_addr;
+        return 0;
+    }
+
+    // Copy the trace bytes into memory buffer
+    std::vector<uint8_t> trace_data;
+    trace_data.resize(static_cast<size_t>(trace_data_len));
+    memcpy(trace_data.data(),
+        reinterpret_cast<void*>(static_cast<uintptr_t>(trace_data_addr)),
+        static_cast<size_t>(trace_data_len));
+
+    // Append to file
+    FILE* fp = nullptr;
+	//if you want per-thread files
+    //std::string thread_output_file = output_file + std::to_string(thread_storage_address) + ".trace";
+
+	{//scope lock
+        std::lock_guard<std::mutex> lock(file_mutex);
+        fopen_s(&fp, output_file.c_str(), "ab");
+        if (fp) {
+            fwrite(trace_data.data(), 1, trace_data.size(), fp);
+            fclose(fp);
+        }
+        else {
+            print("dump_trace: failed to open trace file");
+            bufer_2_file();
+        }
+    }
+    // Reset trace buffer pointer to trace_data_addr (i.e. empty trace)
+    *reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(begining_of_trace_area)) = trace_data_addr;
+
+    //print(std::string("dump_trace ok: len=") + std::to_string(trace_data_len) +
+    //    " base=" + std::to_string(thread_storage_address));
+    //bufer_2_file();
+
+    return static_cast<uint64_t>(trace_data_len);
+}
+
+uint64_t dump_all_traces()
+{
+    // Load how many allocations we have (snapshot)
+    uint32_t count = g_alloc_count.load(std::memory_order_acquire);
+    uint64_t total_bytes = 0;
+    print("dump_all_traces()");
+    for (uint32_t i = 0; i < count; ++i) {
+        uint64_t addr = g_allocations[i];
+        if (addr == 0) continue;
+
+        // Call the existing dump_trace for this allocation.
+        dump_trace(addr);
+
+
+    }
+
+    return 0;
+}
 
 // global (process-wide)
 static DWORD g_flsIndex = FLS_OUT_OF_INDEXES;
@@ -56,6 +214,34 @@ bool InitTraceGuards() {
     return g_flsIndex != FLS_OUT_OF_INDEXES;
 }
 
+
+static std::atomic<bool> g_shutdown_requested{ false };
+static HANDLE g_shutdown_event = nullptr;
+static HANDLE g_worker = nullptr;
+
+DWORD WINAPI WorkerThread(LPVOID) {
+    HANDLE ev = g_shutdown_event;
+    for (;;) {
+        DWORD w = WaitForSingleObject(ev, INFINITE);
+        if (w == WAIT_OBJECT_0) break; // shutdown signaled
+    }
+    // --- Do your real cleanup here (file flush, buffers, etc.) ---
+    // Keep in mind: if process is terminating, you may have little time.
+    
+    return 0;
+}
+
+//This does not work it is stupid llm code
+bool tracer_init() {
+    // Call this from your host right after LoadLibrary (NOT from DllMain)
+    g_shutdown_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!g_shutdown_event) return false;
+    g_worker = CreateThread(nullptr, 0, WorkerThread, nullptr, 0, nullptr);
+    return g_worker != nullptr;
+}
+
+
+
 BOOL APIENTRY DllMain(HMODULE hModule,
     DWORD  ul_reason_for_call,
     LPVOID lpReserved
@@ -65,13 +251,15 @@ BOOL APIENTRY DllMain(HMODULE hModule,
     {
     case DLL_PROCESS_ATTACH:
         init();
+        //tracer_init();
+        DisableThreadLibraryCalls(hModule);
         break;
-    case DLL_THREAD_ATTACH:
-        InitTraceGuards();
-    case DLL_THREAD_DETACH:
-		break;
     case DLL_PROCESS_DETACH:
+        dump_all_traces();
         bufer_2_file();
+        //Dumb llm code
+        //g_shutdown_requested.store(true, std::memory_order_relaxed);
+        //if (g_shutdown_event) SetEvent(g_shutdown_event);
         break;
     }
     return TRUE;
@@ -155,7 +343,7 @@ static inline bool safe_read_u64(uint64_t* out, const void* p) noexcept {
 // -------------------------------
 // Per-thread return-address stacks
 // -------------------------------
-// For each thread we keep a map: function_address -> vector<saved_return_address>
+// For each thread we keep a map: function_num -> vector<saved_return_address>
 // This mirrors the Python approach ret_replacements[tid][jump_table_address] = stack
 
 static thread_local std::unordered_map<uint64_t, std::vector<uint64_t>>* tls_ret_stacks_ptr = nullptr;
@@ -167,20 +355,20 @@ inline std::unordered_map<uint64_t, std::vector<uint64_t>>& GetTLSMap() {
     return *tls_ret_stacks_ptr;
 }
 
-uint64_t function_enter_trace_point(uint64_t function_address, uint64_t return_address_pointer, uint64_t return_address) {
+uint64_t function_enter_trace_point(uint64_t function_num, uint64_t return_address_pointer, uint64_t return_address) {
     // Safety: check pointer before dereferencing
 
     auto& tls_ret_stacks = GetTLSMap();
-    tls_ret_stacks[function_address].push_back(return_address);
+    tls_ret_stacks[function_num].push_back(return_address);
 
     // Logging (unchanged format aside from content)
     uint32_t thread_id = static_cast<uint32_t>(__readgsdword(0x48));
     std::string thread_id_str = std::to_string(thread_id);
-    std::string function_address_str = std::to_string((uintptr_t)function_address);
+    std::string function_num_str = std::to_string((uintptr_t)function_num);
     std::string return_address_pointer_str = std::to_string((uintptr_t)return_address_pointer);
     std::string return_address_str = std::to_string((uintptr_t)return_address);
 
-    std::string desc = std::string("enter: ") + thread_id_str + " " + function_address_str + " " + return_address_pointer_str + " " + return_address_str;
+    std::string desc = std::string("enter: ") + thread_id_str + " " + function_num_str + " " + return_address_pointer_str + " " + return_address_str;
     print(desc);
 
     // Return 0 for now. If you want this function to return something useful to the caller,
@@ -188,11 +376,11 @@ uint64_t function_enter_trace_point(uint64_t function_address, uint64_t return_a
     return 0;
 }
 
-uint64_t function_exit_trace_point(uint64_t function_address) {
+uint64_t function_exit_trace_point(uint64_t function_num) {
     uint64_t original_return = 0;
     auto& tls_ret_stacks = GetTLSMap();
 
-    auto it = tls_ret_stacks.find(function_address);
+    auto it = tls_ret_stacks.find(function_num);
     if (it != tls_ret_stacks.end()) {
         auto& vec = it->second;
         if (!vec.empty()) {
@@ -207,39 +395,39 @@ uint64_t function_exit_trace_point(uint64_t function_address) {
 
     uint32_t thread_id = static_cast<uint32_t>(__readgsdword(0x48));
     std::string thread_id_str = std::to_string(thread_id);
-    std::string function_address_str = std::to_string((uintptr_t)function_address);
+    std::string function_num_str = std::to_string((uintptr_t)function_num);
     std::string return_address_str = std::to_string((uintptr_t)original_return);
 
-    std::string desc = std::string("exit: ") + thread_id_str + " " + function_address_str + " " + return_address_str;
+    std::string desc = std::string("exit: ") + thread_id_str + " " + function_num_str + " " + return_address_str;
     print(desc);
 
     // Return the original return address so the caller can jump/restore to it.
     return original_return;
 }
 
-uint64_t function_call_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address, uint64_t target_address) {
+uint64_t function_call_trace_point(uint64_t function_num, uint64_t call_address, uint64_t return_address, uint64_t target_address) {
     uint32_t thread_id = static_cast<uint32_t>(__readgsdword(0x48));
     std::string thread_id_str = std::to_string(thread_id);
-    std::string function_address_str = std::to_string((uintptr_t)function_address);
+    std::string function_num_str = std::to_string((uintptr_t)function_num);
     std::string call_address_str = std::to_string((uintptr_t)call_address);
     std::string return_address_str = std::to_string((uintptr_t)return_address);
     std::string target_address_str = std::to_string((uintptr_t)target_address);
 
 
-    std::string desc = std::string("call: ") + thread_id_str + " " + function_address_str + " " + call_address_str + " " + return_address_str + " " + target_address_str;
+    std::string desc = std::string("call: ") + thread_id_str + " " + function_num_str + " " + call_address_str + " " + return_address_str + " " + target_address_str;
     print(desc);
     return 0;
 }
 
-uint64_t function_called_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address) {
+uint64_t function_called_trace_point(uint64_t function_num, uint64_t call_address, uint64_t return_address) {
     uint32_t thread_id = static_cast<uint32_t>(__readgsdword(0x48));
     std::string thread_id_str = std::to_string(thread_id);
-    std::string function_address_str = std::to_string((uintptr_t)function_address);
+    std::string function_num_str = std::to_string((uintptr_t)function_num);
     std::string call_address_str = std::to_string((uintptr_t)call_address);
     std::string return_address_str = std::to_string((uintptr_t)return_address);
 
 
-    std::string desc = std::string("called: ") + thread_id_str + " " + function_address_str + " " + call_address_str + " " + return_address_str;
+    std::string desc = std::string("called: ") + thread_id_str + " " + function_num_str + " " + call_address_str + " " + return_address_str;
     print(desc);
     return 0;
 }
@@ -254,15 +442,7 @@ int reset_stack_trace() {
 }
 
 
-MH_STATUS hook_function(LPVOID pTarget, LPVOID pDetour, LPVOID* ppOriginal) {
-    return MH_CreateHook(pTarget, pDetour, ppOriginal);
-}
 
-void enable_hooks() {
-    if (MH_EnableHook(MH_ALL_HOOKS) != MH_OK) {
-        print("Failed to enable hooks");
-    }
-}
 
 void init() {
 	FILE* fp;
@@ -275,11 +455,6 @@ void init() {
         fclose(fp);
     }
 	
-    if (MH_Initialize() != MH_OK) {
-        print("ERROR: Failed to initialize MinHook");
-    }else{
-		print("calltrace_loaded:");
-	}
     bufer_2_file();
 }
 

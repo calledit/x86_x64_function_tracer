@@ -45,6 +45,8 @@ from keystone import Ks, KS_ARCH_X86, KS_MODE_64, KsError
 from typing import Dict, List, Tuple, Optional, Callable, Any
 import traceback
 import random
+import hook_lib
+import locale
 
 # -----------------------------
 # Globals / State
@@ -104,6 +106,7 @@ area_for_function_table = None
 area_for_return_addr_linked_list = 3*8* 100000#this is how deap the recursion can be traced
 area_for_tracing_results = 8*10000000
 area_for_xsave64 = 12228 #we give xsave 8192 12228 to save its data
+nr_of_prepared_alocations = 10
 
 use_python_tracing = False
 
@@ -230,7 +233,7 @@ def allocate_close(process, address_close_to_code):
 
 def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, address_close_to_code: int) -> None:
     """Allocate remote memory regions and inject the helper DLL."""
-    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address
+    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages
 
     # VirtualAllocEx signature configuration
     ctypes.windll.kernel32.VirtualAllocEx.argtypes = [
@@ -286,13 +289,61 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
     if thread_storage_list_address == 0:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
     
-
+    
+    alocated_thread_storages = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, nr_of_prepared_alocations*8, 0x3000, 0x04)
+    if alocated_thread_storages == 0:
+        raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
+    
+    #setup_thread_storage(event)
+    
     # Inject helper DLL with MinHook-based hooks
     run_loadlibrary_in_process(process_handle, process, "calltracer.dll", on_calltrace_dll_ready)
     
+    process.close_handle()
+
+def alloc_thread_storage_done(event):
+    process = event.get_process()
+    pid = event.get_pid()
+    print("hooking")
+    hook_calls(process, event, pid)
+    
+    
+def set_set_area_for_function_table_done(event):
+    process = event.get_process()
+    process_handle = process.get_handle()
+    #here we prealoacte memory for threads
+    injection_info = None
+    for stor_id in range(nr_of_prepared_alocations-1):
+        hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + stor_id*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nret")
+    
+
+    #These are not executed in series but lets hope this works    
+    injection_info = hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + (nr_of_prepared_alocations-1)*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nint3\nret")
+    external_breakpoints[injection_info['remote_code']+injection_info['code_size']-1] = alloc_thread_storage_done
+    
+    
+def setup_after_dll_loaded(process, event, pid):
+    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages
+    
+    
+    process_handle = process.get_handle()
+    
+    #Set set_area_for_function_table
+    mem_size = str(area_for_function_table)
+    asf = "sub rsp, 40\nmov     rcx, "+mem_size+"\nmovabs rax, "+str(call_tracer_dll_func['set_area_for_function_table'])+"\n\ncall rax\nadd rsp, 40\nint3\nret"
+    injection_info = hook_lib.inject_asm(process_handle, asf)
+    external_breakpoints[injection_info['remote_code']+injection_info['code_size']-1] = set_set_area_for_function_table_done
+    
+    
+    
+    str_addr, alloc_size = hook_lib.alloc_and_write_remote(process_handle, out_file.encode(locale.getpreferredencoding()) + b'\x00', False)
+    set_output_file_asm = "sub rsp, 40\nmovabs     rcx, "+str(str_addr)+"\nmovabs rax, "+str(call_tracer_dll_func['set_output_file'])+"\n\ncall rax\nadd rsp, 40\nret"
+    hook_lib.inject_asm(process_handle, set_output_file_asm)
+    
+    process.close_handle()
+    
     #save state requires you to push 128 bytes to rsp before calling lea   rsp, [rsp-128]
     #Setup save sate and restore state functions
-    #save_state_asm, restore_state_asm = generate_clean_asm_func_call("", in_two_parts = True)
     
     #save state function
     save_state_asm = strip_semicolon_comments("""
@@ -313,8 +364,8 @@ push rcx
 push rdx
 push r8
 push r9
-push r10          ; r10 used as temp for alignment
-push r11          ; r11 used for size/temp
+push r10    
+push r11
 push r12
 push r13
 push r14
@@ -325,6 +376,8 @@ push rbx
 ; Find thread storage from list
 
 .find_current_thread_location:
+xor rdi,rdi
+xor r11,r11
 ; load current thread id (low 32 bits of GS:[0x48])
 xor rax,rax
 mov     eax, dword ptr gs:[0x48]    ; EAX = current TID
@@ -333,34 +386,90 @@ lea r12, [rax*8] ; fix offset
 ; base pointer to the array
 movabs  rsi, """+str(thread_storage_list_address)+"""           ; RSI = array base
 add r12, rsi
+mov rax, [r12]
+test rax, rax
+jnz .thread_memmory_is_alocated  ; jump if not zero (ZF = 0)
+
+    ; not alocated - get allocation
+
+
+    movabs rsi, """+str(alocated_thread_storages)+"""
+    mov rcx, """+str(nr_of_prepared_alocations)+"""
+    ; rsi = base, rcx = count
+    ; clobbers: rdi, rax
+    ; returns:  rdi = addres of value, rax = popped value (0 if none), ZF=1 if none
+
+        mov     rdi, rsi              ; cursor = base
+    .scan:
+        test    rcx, rcx
+        jz      .not_found
+
+        xor     eax, eax              ; rax := 0 to swap into the slot
+        xchg    rax, [rdi]            ; atomically: rax <- slot, slot <- 0
+        test    rax, rax
+        jnz     .found                ; got a non-zero, done
+
+        add     rdi, 8                ; next qword
+        dec     rcx
+        jmp     .scan
+
+
+    .not_found:
+        int3 ; can never be allowed to happen
+        xor     eax, eax
+
+    .found:
+        mov [r12], rax ; save new vale
+        mov     r11, 1 ;set R11 so we store the extended registers we only do it if we need to as it is slow
+        ;RDI is already set so alloc_thread_storage(uint64_t out_address) will be called further down
+
+
+
+.thread_memmory_is_alocated:
 mov r12, [r12]
 
-"""+("""
+;Check if trace memmory starts be become to big
+xor r9, r9
+mov r10, r12
+add r10, """+str(area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list)+"""; get memory area for tracing
 
-; set mask: XCR0 -> EDX:EAX, ECX must be 0
-xor  ecx, ecx
-xgetbv
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
 
-; save extended state; DO NOT use rdx as the memory base (EDX is mask upper)
-xsave64 [r12]            ; (use xsaveopt if you detect support)
-xor  ecx, ecx
+add r10 , """+str(area_for_tracing_results-1000)+"""
+cmp r10, r8
+ja  .size_ok 
+    mov     r9, r12 ; We set r9 indicating that we need to empty the memory
+    mov     r11, 1 ;set R11 so we store the extended registers we only do it if we need to as it is slow
+.size_ok:
 
-""" if False else "")+"""
+
+;IF r11 is not zero we need to save the extended state so we can call calling alloc_thread_storage
+test    r11, r11
+jz .skip_saving_extended_state
+    ; set mask: XCR0 -> EDX:EAX, ECX must be 0
+    xor  ecx, ecx
+    xgetbv
+
+    ; save extended state; DO NOT use rdx as the memory base (EDX is mask upper)
+    xsave64 [r12]            ; (use xsaveopt if you detect support)
+    xor  ecx, ecx
+
+.skip_saving_extended_state:
+
 
 ; ===== prepare for making the actual code =====
 ; We must ensure RSP is 16-byte aligned at the CALL instruction and have 32 bytes shadow.
 
 ; Compute the adjustment needed to align RSP to 16 bytes:
 ; r10 currently saved on stack; we'll use r10 as temp for alignment value
-; r11 currently holds alloc_size but we won't clobber it; use rax/rcx temporarily
 mov  rax, rsp
 and  rax, 15          ; rax = rsp % 16
 xor  r10, r10         ; r10 = 0 (will store correction amount if any)
 test rax, rax
 je   .no_align_needed
-mov  r10, 16
-sub  r10, rax         ; r10 = (16 - (rsp & 15))
-sub  rsp, r10         ; adjust stack to align to 16
+    mov  r10, 16
+    sub  r10, rax         ; r10 = (16 - (rsp & 15))
+    sub  rsp, r10         ; adjust stack to align to 16
 .no_align_needed:
 push r10
 push r15
@@ -370,6 +479,33 @@ push r12
 ; Now allocate the 32-byte shadow space required by Windows x64 ABI
 sub  rsp, 32
 
+test    RDI, RDI
+jz .skip_alloc_thread_storage
+
+    ;Alocate new thread storage rcx is alrady filled from 
+
+    mov rcx, rdi ;set first arg
+    movabs rax, """+str(call_tracer_dll_func['alloc_thread_storage'])+"""
+    call rax
+
+    ;Restore r15
+    mov r15, [rsp+48]
+
+.skip_alloc_thread_storage:
+
+test    R9, R9
+jz .skip_dump_trace
+
+    ;dump saved traces
+
+    mov rcx, r9 ;set first arg
+    movabs rax, """+str(call_tracer_dll_func['dump_trace'])+"""
+    call rax
+
+    ;Restore r15
+    mov r15, [rsp+48]
+
+.skip_dump_trace:
 
 jmp [r15 - 136] ;Jump back to return address of save call
     """)
@@ -398,17 +534,18 @@ mov [r15-136], r10
 pop r10
 test r10, r10
 je   .no_align_restore
-add  rsp, r10
+    add  rsp, r10
 .no_align_restore:
 
-"""+("""
+test    r11, r11
+jz .skip_restoring_extended_state
 
-; ===== restore extended state =====
-xor  ecx, ecx
-xgetbv
-xrstor64 [r12]        ; restore extended state from stack buffer
+    ; ===== restore extended state =====
+    xor  ecx, ecx
+    xgetbv
+    xrstor64 [r12]        ; restore extended state from stack buffer
 
-""" if False else "")+"""
+.skip_restoring_extended_state:
 
 ; ===== restore saved registers in reverse order =====
 
@@ -441,9 +578,12 @@ jmp [rsp - 136] ;jump to restore return address
     shell_code_address += len(restore_state_code)
     process.write(restore_state_address, restore_state_code)
 
-    process.close_handle()
     
-    setup_thread_storage(event)
+    
+    
+    
+    # Hook stuff
+    #create_list_of_functions_to_hook(process)
 
 
 def min_hooked_entry_hook(ujump_table_address: int, function_addres, callback: Callable[[Any], None], event: Any) -> None:
@@ -1948,9 +2088,7 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
                     allocate_mem_and_inject_dll(event, process, pid, tid, exe_entry_address)
                     allocate_and_inject_dll = False
                     
-                    # Hook stuff
-                    #create_list_of_functions_to_hook(process)
-                    hook_calls(process, event, pid)
+                    
                     
                     # add a breakpoint on the entry point
                     event.debug.break_at(pid, exe_entry_address, exe_entry)
@@ -1964,7 +2102,7 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
             filename = event.get_filename()
             basic = get_base_name(filename)
             exe_basic_name = basic
-            out_file = 'output'+os.sep+exe_basic_name+'.trace'
+            out_file = os.path.abspath('output'+os.sep+exe_basic_name+'.trace')
             if os.path.exists(out_file):
                 os.remove(out_file)
             base_addr = event.get_module_base()
@@ -1979,7 +2117,7 @@ def on_debug_event(event: Any, reduce_address: bool = False) -> None:
             except Exception:
                 pass
 
-            setup_thread_storage(event)
+            #setup_thread_storage(event)
         
         if name == "Thread termination event":
             if load_dll_tid != -1 and tid == load_dll_tid:
@@ -2016,10 +2154,6 @@ def setup_thread_storage(event, tid = None):
             
     if thread_storage_list_address is not None and tid not in thread_storage_list_addresses:
         
-        
-        if area_for_function_table is None:
-            nr_of_functions = len(pdata)
-            area_for_function_table = nr_of_functions*8+1#(we add  one just in case i dont remember if ordinal was zero or one indexed)
             
         
         thread_storage_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list + area_for_tracing_results, 0x3000, 0x04)
@@ -2487,6 +2621,9 @@ def on_calltrace_dll_ready(event):
         
         process = event.get_process()
         pid = process.get_pid()
+    else:
+        raise Exception("dll has no exports")
+    setup_after_dll_loaded(process, event, pid)
     
     
 
@@ -2516,7 +2653,7 @@ def exe_entry(event: Any) -> None:
 
 def get_pdata(filen: str, base_addr: int, exe_basic_name: str) -> None:
     """Parse .pdata from file on disk and populate function ranges & IDs."""
-    global pdata, pdata_functions, exe_entry_address, pdata_function_ids
+    global pdata, pdata_functions, exe_entry_address, pdata_function_ids, area_for_function_table
 
     pe = pefile.PE(filen)
     exe_entry_address = pe.OPTIONAL_HEADER.AddressOfEntryPoint + base_addr
@@ -2538,7 +2675,9 @@ def get_pdata(filen: str, base_addr: int, exe_basic_name: str) -> None:
                 functions.append((start_addr + base_addr, end_addr + base_addr, unwind_info_addr, i))
                 pdata_function_ids[start_addr + base_addr] = exe_basic_name + "_" + str(i)
             break
-
+    if area_for_function_table is None:
+        nr_of_functions = len(pdata)
+        area_for_function_table = (nr_of_functions+1)*8#(we add  one just in case i dont remember if ordinal was zero or one indexed)
     pdata_functions = functions
 
 

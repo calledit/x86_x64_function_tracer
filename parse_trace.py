@@ -110,7 +110,7 @@ if __name__ == '__main__':
             #    break
         #exit()
         print("\n")
-        
-        print("printing in hindsight allows you to acount for enter and exits effect on the call stack")
-        print_traces(traces, len(un_matched_exits), contains_exits)
+        if contains_exits:
+            print("printing in hindsight allows you to acount for enter and exits effect on the call stack")
+            print_traces(traces, len(un_matched_exits), contains_exits)
         
