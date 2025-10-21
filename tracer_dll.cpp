@@ -471,19 +471,22 @@ static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
         // 0xCC       = 1-byte INT3
         // 0xCD 0x03  = 2-byte INT 3
 
-        uint64_t rip = ep->ContextRecord->Rip;
+        uint64_t rip = ctx->Rip;
 
-        print("got breakpoint: " + std::to_string(rip));
+        
 
         std::shared_lock<std::shared_mutex> lock(jump_rwlock);
         auto it = jump_breakpoints.find(rip);
         if (it != jump_breakpoints.end()) {
-            ep->ContextRecord->Rip = it->second;   // redirect
+            ctx->Rip = it->second;   // redirect
             return EXCEPTION_CONTINUE_EXECUTION;
         }
 
 		//this is a normal breakpoint not a jump breakpoint we set
-        return EXCEPTION_CONTINUE_SEARCH;
+        //return EXCEPTION_CONTINUE_SEARCH;
+
+        print("got unkown breakpoint trying to deal with it: " + std::to_string(rip));
+        bufer_2_file();
 
         BYTE* ip = reinterpret_cast<BYTE*>(ctx->Rip);
         SIZE_T skip = 0;
@@ -510,9 +513,21 @@ static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
         return EXCEPTION_CONTINUE_EXECUTION; // resume as if nothing happened
     }
     else if (rec->ExceptionCode == EXCEPTION_SINGLE_STEP) {
+        print("got single step exception");
+        bufer_2_file();
         // Hardware breakpoints / TF traps also come here.
         // Handle if you care; otherwise let others handle it.
         return EXCEPTION_CONTINUE_SEARCH;
+    }
+    else if (rec->ExceptionCode == 0x40010006) { // STATUS_WAKE_SYSTEM_DEBUGGER
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    else if (rec->ExceptionCode == 0x4001000A) { // STATUS_WAKE_SYSTEM_DEBUGGER_CONTINUE
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    else {
+        print("got other exception"+ std::to_string(rec->ExceptionCode));
+        bufer_2_file();
     }
 
     return EXCEPTION_CONTINUE_SEARCH;

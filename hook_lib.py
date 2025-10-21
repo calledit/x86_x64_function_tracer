@@ -6,6 +6,7 @@ import os
 import time
 from keystone import Ks, KS_ARCH_X86, KS_MODE_64, KsError
 import struct, traceback
+import capstone
 
 # ---- Win32 libs ----------------------------------------------------------
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -51,6 +52,16 @@ Process32NextW.restype = wintypes.BOOL
 CloseHandle = kernel32.CloseHandle
 
 
+class MEMORY_BASIC_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BaseAddress",       wintypes.LPVOID),
+        ("AllocationBase",    wintypes.LPVOID),
+        ("AllocationProtect", wintypes.DWORD),
+        ("RegionSize",        ctypes.c_size_t),
+        ("State",             wintypes.DWORD),
+        ("Protect",           wintypes.DWORD),
+        ("Type",              wintypes.DWORD),
+    ]
 
 OpenProcess = kernel32.OpenProcess
 VirtualAllocEx = kernel32.VirtualAllocEx
@@ -62,6 +73,8 @@ GetExitCodeThread = kernel32.GetExitCodeThread
 VirtualProtectEx = kernel32.VirtualProtectEx
 CloseHandle = kernel32.CloseHandle
 FlushInstructionCache = kernel32.FlushInstructionCache
+VirtualQueryEx = kernel32.VirtualQueryEx
+VirtualProtectEx = kernel32.VirtualProtectEx
 
 
 #Fix issues
@@ -81,14 +94,33 @@ kernel32.FlushInstructionCache.argtypes = [wintypes.HANDLE, ctypes.c_void_p, cty
 kernel32.FlushInstructionCache.restype = wintypes.BOOL
 ReadProcessMemory.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_size_t)]
 ReadProcessMemory.restype = wintypes.BOOL
+VirtualQueryEx.argtypes = [wintypes.HANDLE, wintypes.LPCVOID, ctypes.POINTER(MEMORY_BASIC_INFORMATION), ctypes.c_size_t]
+VirtualQueryEx.restype  = ctypes.c_size_t
+VirtualProtectEx.argtypes = [wintypes.HANDLE, wintypes.LPVOID, ctypes.c_size_t, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+VirtualProtectEx.restype  = wintypes.BOOL
 
 
 MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
 PAGE_READWRITE = 0x04
 PAGE_EXECUTE_READ = 0x20
+PAGE_EXECUTE_READWRITE    = 0x40
+PAGE_WRITECOPY            = 0x08
+PAGE_GUARD                 = 0x100
+PAGE_NOACCESS              = 0x01
+PAGE_READONLY              = 0x02
+PAGE_EXECUTE_WRITECOPY     = 0x80
 INFINITE = 0xFFFFFFFF
 PROCESS_ALL = 0x1F0FFF
+
+MEM_FREE                  = 0x10000
+
+MEM_IMAGE                 = 0x1000000
+MEM_MAPPED                = 0x40000
+MEM_PRIVATE               = 0x20000
+WAIT_OBJECT_0 = 0x00000000
+
+
 
 
 # Initialize Keystone for x64.
@@ -130,7 +162,7 @@ def get_pids_by_name(exe_name):
 
 # ---- Module enumeration (PSAPI + Toolhelp fallback) ----------------------
 # PSAPI-based functions (preferred)
-def list_modules_psapi(hProc):
+def list_modules_psapi(hProc, base_name = False):
 
     try:
         # allocate large array of HMODULE pointers
@@ -148,7 +180,7 @@ def list_modules_psapi(hProc):
 
         count = int(cb_needed.value // ctypes.sizeof(ctypes.c_void_p))
         if count == 0:
-            return []
+            return {}
 
         if count > arr_size:
             HMODULE_ARR2 = (ctypes.c_void_p * count)
@@ -171,7 +203,7 @@ def list_modules_psapi(hProc):
         GetModuleInformation.argtypes = [wintypes.HANDLE, ctypes.c_void_p, ctypes.POINTER(MODULEINFO), wintypes.DWORD]
         GetModuleInformation.restype = wintypes.BOOL
 
-        out = []
+        out = {}
         buf = ctypes.create_unicode_buffer(MAX_PATH)
         for i in range(count):
             hmod = arr[i]
@@ -186,7 +218,10 @@ def list_modules_psapi(hProc):
                     size = int(mi.SizeOfImage)
             except Exception:
                 pass
-            out.append({"path": path, "base": base, "size": size})
+            key = path
+            if base_name:
+                key = os.path.basename(key).lower()
+            out[key] = {"path": path, "base": base, "size": size}
         return out
     finally:
         pass
@@ -213,40 +248,18 @@ Module32NextW = kernel32.Module32NextW
 Module32NextW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MODULEENTRY32W)]
 Module32NextW.restype = wintypes.BOOL
 
-def list_modules_toolhelp(pid):
-    snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32, pid)
-    if snap == wintypes.HANDLE(-1).value:
-        raise OSError("CreateToolhelp32Snapshot(Module) failed: %d" % ctypes.get_last_error())
-    try:
-        me = MODULEENTRY32W()
-        me.dwSize = ctypes.sizeof(MODULEENTRY32W)
-        ok = Module32FirstW(snap, ctypes.byref(me))
-        if not ok:
-            raise OSError("Module32FirstW failed: %d" % ctypes.get_last_error())
-        out = []
-        while ok:
-            path = me.szExePath
-            base = int(me.modBaseAddr) if me.modBaseAddr else None
-            size = int(me.modBaseSize)
-            out.append({"path": path, "base": base, "size": size})
-            ok = Module32NextW(snap, ctypes.byref(me))
-        return out
-    finally:
-        CloseHandle(snap)
 
-def enumerate_modules(hProc, pid = None):
+def enumerate_modules(hProc, do_until_sucess = False, base_name = False):
     """Try PSAPI first; fallback to Toolhelp."""
-    try:
-        mods = list_modules_psapi(hProc)
-        if mods:
-            return mods
-    except Exception as e:
-        # PSAPI might fail due to rights/cross-bitness; fallback
-        print(f"PSAPI failed for handle {hProc}: {e}", file=sys.stderr)
+    mods = False
+    while not mods:
+        mods = list_modules_psapi(hProc, base_name)
+        if mods or not do_until_sucess:
+            break
+        time.sleep(0.01)
     
-    if pid is None:
-        raise Exception("no PID given")
-    return list_modules_toolhelp(pid)
+    return mods
+
 
 # ---- Start process helper ------------------------------------------------
 def try_start_executable(exe_path):
@@ -266,13 +279,14 @@ def try_start_executable(exe_path):
     return proc.pid
 
 # ---- CLI -----------------------------------------------------------------
-def print_modules_for_pid(mods):
+def print_modules(mods):
 
     if not mods:
         print(f"No modules.")
         return
     print(f"--- modules ---")
-    for m in mods:
+    for k in mods:
+        m = mods[k]
         base = ("0x%016X" % m["base"]) if m.get("base") else "N/A"
         size = str(m.get("size")) if m.get("size") else "N/A"
         print(f"{base:>18}  {size:>8}  {m['path']}")
@@ -287,12 +301,6 @@ def load_library_in_remote(hProc, dll_path: str, wait: bool = True):
     Raises OSError on failure.
     """
 
-    # If already loaded, return that module info
-    mods = enumerate_modules(hProc)
-    target_name = os.path.basename(dll_path).lower()
-    for m in mods:
-        if os.path.basename(m["path"]).lower() == target_name:
-            return m  # already loaded
 
     try:
         # write the dll path into remote process
@@ -318,15 +326,12 @@ def load_library_in_remote(hProc, dll_path: str, wait: bool = True):
 
         # find remote kernel32 base via enumerate_modules
         remote_k32_base = None
-        mods = enumerate_modules(pid)
-        for m in mods:
-            if os.path.basename(m["path"]).lower() == "kernel32.dll":
-                remote_k32_base = m["base"]
-                break
-            # sometimes kernelbase.dll implements LoadLibrary; also check kernelbase.dll
-            if os.path.basename(m["path"]).lower() == "kernelbase.dll" and remote_k32_base is None:
-                # keep as fallback if not found kernel32
-                remote_k32_base = m["base"]
+        mods = enumerate_modules(hProc, base_name = True)
+        if "kernel32.dll" in mods:
+            remote_k32_base = mods["kernel32.dll"]["base"]
+        #elif "kernelbase.dll" in mods:
+        #    # sometimes kernelbase.dll implements LoadLibrary; also check kernelbase.dll
+        #    remote_k32_base = mods["kernelbase.dll"]["base"]
 
         if not remote_k32_base:
             raise OSError("Failed to locate kernel32/kernelbase base in target process")
@@ -343,22 +348,11 @@ def load_library_in_remote(hProc, dll_path: str, wait: bool = True):
             # optionally can read exit code but it's 32-bit only
             exit_code = wintypes.DWORD()
             GetExitCodeThread(hThread, ctypes.byref(exit_code))
-
-        # enumerate modules again and find our DLL
-        time.sleep(0.05)  # small delay to allow loader to finish mapping
-        mods2 = enumerate_modules(pid)
-        for m in mods2:
-            if os.path.basename(m["path"]).lower() == target_name:
-                return m
-
-        # If we reach here, the module didn't appear (maybe loader failed)
-        raise OSError("DLL injection appeared to complete but module not found in remote module list")
+            
+        return
 
     finally:
-        try:
-            CloseHandle(hProc)
-        except Exception:
-            pass
+        pass
 
 def get_handle(pid):
     # open process
@@ -366,8 +360,324 @@ def get_handle(pid):
     if not hProc:
         raise OSError(f"OpenProcess({pid}) failed: {ctypes.get_last_error()}")
     return hProc
+    
+def _query_mbi(hProcess, addr):
+    mbi = MEMORY_BASIC_INFORMATION()
+    res = VirtualQueryEx(hProcess, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi))
+    if res == 0:
+        raise ctypes.WinError(ctypes.get_last_error())
+    return mbi
+
+def write(hProcess, lpBaseAddress: int, lpBuffer: bytes) -> int:
+    """
+    Writes to the memory of the process `hProcess` starting at `lpBaseAddress`.
+    Temporarily adjusts page protections if needed.
+
+    :param hProcess: HANDLE to the process (open with PROCESS_VM_WRITE | PROCESS_VM_OPERATION).
+    :param lpBaseAddress: integer base address to start writing to.
+    :param lpBuffer: bytes to write.
+    :return: number of bytes actually written (may be less than len(lpBuffer)).
+    :raises: ctypes.WinError on fatal failures (e.g. VirtualQueryEx).
+    """
+    if not lpBuffer:
+        return 0
+
+    # Query memory info for the target address
+    mbi = _query_mbi(hProcess, lpBaseAddress)
+
+    # Check that this region has content (committed)
+    if not (mbi.State & MEM_COMMIT):
+        # mirror original behavior: consider invalid address
+        raise ctypes.WinError(ERROR_INVALID_ADDRESS)
+
+    # Decide whether we need to change protection to allow writing
+    need_protect = False
+    new_prot = None
+
+    # If image or mapped, use WRITE_COPY semantics
+    if mbi.Type == MEM_IMAGE or mbi.Type == MEM_MAPPED:
+        new_prot = PAGE_WRITECOPY
+        need_protect = True
+    else:
+        # if existing protection is writable, we don't need to change
+        prot = mbi.Protect
+        # prot flags that indicate writable include PAGE_READWRITE, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY
+        writable_flags = (PAGE_READWRITE, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY)
+        if prot in writable_flags:
+            need_protect = False
+            new_prot = None
+        else:
+            # if executable but not writable, escalate to RXW
+            # this mirrors the original: for executable pages, use PAGE_EXECUTE_READWRITE
+            exec_flags = (PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE)
+            if prot in exec_flags:
+                new_prot = PAGE_EXECUTE_READWRITE
+            else:
+                # default fallback: PAGE_READWRITE
+                new_prot = PAGE_READWRITE
+            need_protect = True
+
+    bytes_total = len(lpBuffer)
+    bytes_written_total = 0
+    org_lpBaseAddress = lpBaseAddress
+
+    old_prot_value = wintypes.DWORD(0)
+    protected = False
+
+    # Try to change protection if needed (best-effort)
+    if need_protect and new_prot is not None:
+        ok = VirtualProtectEx(hProcess, ctypes.c_void_p(org_lpBaseAddress), ctypes.c_size_t(bytes_total), new_prot, ctypes.byref(old_prot_value))
+        if not ok:
+            # best effort: if we fail, we proceed but warn via exception or just continue like original did
+            # We'll raise a warning-like exception? To keep parity with original, just proceed without protection change.
+            protected = False
+        else:
+            protected = True
+
+    try:
+        # Write in a loop until complete or until WriteProcessMemory writes zero/fails
+        mv = memoryview(lpBuffer)
+        remaining = bytes_total
+        offset = 0
+
+        while remaining > 0:
+            chunk = mv[offset: offset + remaining]  # memoryview slice
+            # Create a contiguous buffer for this chunk
+            buf = (ctypes.c_ubyte * len(chunk)).from_buffer_copy(chunk.tobytes())
+            written = ctypes.c_size_t(0)
+            ok = WriteProcessMemory(hProcess,
+                                    ctypes.c_void_p(lpBaseAddress + offset),
+                                    ctypes.byref(buf),
+                                    ctypes.c_size_t(len(chunk)),
+                                    ctypes.byref(written))
+            if not ok:
+                # WriteProcessMemory failed — break and return what we have
+                break
+            if written.value == 0:
+                # Nothing written (shouldn't usually happen) — break
+                break
+            offset += written.value
+            remaining -= written.value
+            bytes_written_total += written.value
+
+    finally:
+        # Restore original protection if we changed it
+        if protected:
+            tmp = wintypes.DWORD(0)
+            VirtualProtectEx(hProcess, ctypes.c_void_p(org_lpBaseAddress), ctypes.c_size_t(bytes_total), mbi.Protect, ctypes.byref(tmp))
+
+    return bytes_written_total
 
 def alloc_and_write_remote(hProc, data: bytes, make_executable: bool = True, try_r_x_first: bool = True):
+    size = len(data)
+    remote = VirtualAllocEx(hProc, None, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+    if not remote:
+        raise OSError(f"VirtualAllocEx failed: {ctypes.get_last_error()}")
+    return write_remote(hProc, remote, data, make_executable, try_r_x_first)
+
+def hexadecimal(data, separator=""):
+        """
+        Convert binary data to a string of hexadecimal numbers.
+
+        :param data: Binary data.
+        :type  data: str
+
+        :param separator: Separator between the hexadecimal
+            representation of each character.
+        :type  separator: str
+
+        :return: Hexadecimal representation.
+        :rtype:  str
+        """
+        return separator.join(["%.2x" % c for c in data])
+
+
+def _is_protection_readable(prot: int) -> bool:
+    """Return True if protection flags include readable permissions and are not guard/noaccess."""
+    if prot & PAGE_GUARD:
+        return False
+    if prot == PAGE_NOACCESS:
+        return False
+    readable = (PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY,
+                PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_WRITECOPY)
+    return any(prot & flag == flag for flag in readable)
+
+
+def read(hProcess, lpBaseAddress: int, nSize: int) -> bytes:
+    """
+    Read nSize bytes from process hProcess starting at lpBaseAddress.
+    Validates the memory regions are committed and readable.
+    Raises ctypes.WinError on error or if address is invalid.
+    Returns the bytes read (length == nSize) or raises.
+    """
+    if nSize <= 0:
+        return b""
+
+    addr = int(lpBaseAddress)
+    end_addr = addr + int(nSize)
+    out_chunks = []
+
+    # Walk through memory regions covering [addr, end_addr)
+    cur = addr
+    while cur < end_addr:
+        mbi = MEMORY_BASIC_INFORMATION()
+        res = VirtualQueryEx(hProcess, ctypes.c_void_p(cur), ctypes.byref(mbi), ctypes.sizeof(mbi))
+        if res == 0:
+            # Could not query — treat as invalid address
+            raise ctypes.WinError(ERROR_INVALID_ADDRESS)
+        region_base = int(ctypes.addressof(mbi.BaseAddress.contents)) if isinstance(mbi.BaseAddress, ctypes.c_void_p) else int(ctypes.cast(mbi.BaseAddress, ctypes.c_void_p).value or 0)
+        # Compatibility: better to use value conversion:
+        region_base = int(ctypes.cast(mbi.BaseAddress, ctypes.c_void_p).value)
+        region_size = int(mbi.RegionSize)
+        region_end = region_base + region_size
+
+        # Ensure the region is committed
+        if not (mbi.State & MEM_COMMIT):
+            raise ctypes.WinError(ERROR_INVALID_ADDRESS)
+
+        # Ensure readable protections
+        if not _is_protection_readable(mbi.Protect):
+            raise ctypes.WinError(ERROR_INVALID_ADDRESS)
+
+        # How many bytes we can read from this region
+        offset_into_region = cur - region_base
+        to_read = min(end_addr, region_end) - cur
+        if to_read <= 0:
+            # shouldn't happen, but prevent infinite loops
+            raise ctypes.WinError(ERROR_INVALID_ADDRESS)
+
+        # Allocate buffer and read
+        buf = (ctypes.c_ubyte * to_read)()
+        read_here = ctypes.c_size_t(0)
+        ok = ReadProcessMemory(hProcess,
+                               ctypes.c_void_p(cur),
+                               ctypes.byref(buf),
+                               ctypes.c_size_t(to_read),
+                               ctypes.byref(read_here))
+        if not ok:
+            # API failed
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        if read_here.value != to_read:
+            # partial read — treat as error to match original behavior
+            raise ctypes.WinError(ctypes.get_last_error())
+
+        # convert to bytes and append
+        out_chunks.append(ctypes.string_at(ctypes.addressof(buf), to_read))
+
+        # advance
+        cur += to_read
+
+    # join chunks and return
+    result = b"".join(out_chunks)
+    if len(result) != nSize:
+        raise ctypes.WinError()  # defensive
+    return result
+
+def disasm(address, code):
+    # Get the constants for the requested architecture.
+    arch, mode = (capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+    # Get the decoder function outside the loop.
+    md = capstone.Cs(arch, mode)
+    decoder = md.disasm_lite
+    
+    
+
+    # Create the variables for the instruction length, mnemonic and
+    # operands. That way they won't be created within the loop,
+    # minimizing the chances data might be overwritten.
+    # This only makes sense for the buggy vesion of the bindings, normally
+    # memory accesses are safe).
+    length = mnemonic = op_str = None
+
+    # For each instruction...
+    result = []
+    offset = 0
+    while offset < len(code):
+        # Disassemble a single instruction, because disassembling multiple
+        # instructions may cause excessive memory usage (Capstone allocates
+        # approximately 1K of metadata per each decoded instruction).
+        instr = None
+        try:
+            instr = list(decoder(code[offset : offset + 64], address + offset, 1))[
+                0
+            ]
+        except IndexError:
+            pass  # No instructions decoded.
+        except capstone.CsError:
+            pass  # Any other error.
+
+        # On success add the decoded instruction.
+        if instr is not None:
+            # Get the instruction length, mnemonic and operands.
+            # Copy the values quickly before someone overwrites them,
+            # if using the buggy version of the bindings (otherwise it's
+            # irrelevant in which order we access the properties).
+            length = instr[1]
+            mnemonic = instr[2]
+            op_str = instr[3]
+
+            # Concatenate the mnemonic and the operands.
+            if op_str:
+                disasm = "%s %s" % (mnemonic, op_str)
+            else:
+                disasm = mnemonic
+
+            # Get the instruction bytes as a hexadecimal dump.
+            hexdump = hexadecimal(code[offset : offset + length])
+
+        # On error add a "define constant" instruction.
+        # The exact instruction depends on the architecture.
+        else:
+            # The number of bytes to skip depends on the architecture.
+            # On Intel processors we'll skip one byte, since we can't
+            # really know the instruction length. On the rest of the
+            # architectures we always know the instruction length.
+            if arch in (win32.ARCH_I386, win32.ARCH_AMD64):
+                length = 1
+            else:
+                length = 4
+
+            # Get the skipped bytes as a hexadecimal dump.
+            skipped = code[offset : offset + length]
+            hexdump = hexadecimal(skipped)
+
+            # Build the "define constant" instruction.
+            # On Intel processors it's "db".
+            # On ARM processors it's "dcb".
+            if arch in (win32.ARCH_I386, win32.ARCH_AMD64):
+                mnemonic = "db "
+            else:
+                mnemonic = "dcb "
+            b = []
+            for item in skipped:
+                if chr(item).isalpha():
+                    b.append("'%s'" % chr(item))
+                else:
+                    b.append("0x%x" % item)
+            op_str = ", ".join(b)
+            if mnemonic:
+                disasm = mnemonic + op_str
+            else:
+                disasm = op_str
+
+        # Add the decoded instruction to the list.
+        result.append(
+            (
+                address + offset,
+                length,
+                disasm,
+                hexdump,
+            )
+        )
+
+        # Update the offset.
+        offset += length
+
+    # Return the list of decoded instructions.
+    return result
+
+def write_remote(hProc, remote, data: bytes, make_executable: bool = True, try_r_x_first: bool = True):
     """
     Allocate remote RW memory, write `data` and (optionally) change protection to RX.
     Returns (remote_addr, size). Raises OSError on failure.
@@ -377,10 +687,7 @@ def alloc_and_write_remote(hProc, data: bytes, make_executable: bool = True, try
 
     size = len(data)
 
-    # 1) Allocate RW memory in remote process
-    remote = VirtualAllocEx(hProc, None, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
-    if not remote:
-        raise OSError(f"VirtualAllocEx failed: {ctypes.get_last_error()}")
+    
 
     try:
         # 2) WriteProcessMemory (loop until complete)
@@ -426,7 +733,7 @@ def alloc_and_write_remote(hProc, data: bytes, make_executable: bool = True, try
         raise
 
 
-def inject_asm(hProc, asm_code: str, wait: bool = False):
+def inject_asm(hProc, asm_code: str, wait: bool = True):
     """
     Assemble `asm_code` (with asm()) and run it in process `hProc`.
     This call optionally waits for the remote thread to finish.
@@ -443,11 +750,18 @@ def inject_asm(hProc, asm_code: str, wait: bool = False):
     hThread = None
 
     try:
-        # Allocate & write remote, make executable
-        remote_code, code_size = alloc_and_write_remote(hProc, shell, make_executable=True)
+        # 1) Allocate RW memory in remote process
+        remote_code = VirtualAllocEx(hProc, None, code_size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
+        if not remote_code:
+            raise OSError(f"VirtualAllocEx failed: {ctypes.get_last_error()}")
         
         # assemble to get exact code to inject with the correct ofsets
         shell = asm(asm_code, remote_code)
+        
+        # Allocate & write remote, make executable
+        remote_code, code_size = write_remote(hProc, remote_code, shell, make_executable=True)
+        
+        
         # create remote thread and wait or not
         hThread = CreateRemoteThread(hProc, None, 0, ctypes.c_void_p(remote_code), None, 0, None)
         if not hThread:

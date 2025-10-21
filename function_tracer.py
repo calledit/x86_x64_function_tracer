@@ -153,44 +153,59 @@ function_exclusions = [
 # -----------------------------
 # Helpers
 # -----------------------------
-def start_or_attach_debugger(argv: List[str]) -> None:
-    """Start or attach the debugger to the given executable.
+def start_or_attach(argv: List[str]) -> None:
+    """Start or attach to the given executable.
 
-    If only one argument is given, we try to attach to any running process with
-    that filename. Otherwise, we start a new process using the argv list.
     """
-    global spawned
-    debug_obj = Debug(on_debug_event, bKillOnExit=True)
-    try:
-        aSystem = System()
-        aSystem.request_debug_privileges()
-        aSystem.scan_processes()
-        
-        pid: Optional[int] = None
-
-        # Find any running executable
-        if len(argv) == 1:
-            executable = argv[0]
-            for (process, name) in debug_obj.system.find_processes_by_filename(executable):
-                pid = process.get_pid()
-
-        # If there was no running instance of the executable, start it
-        if pid is None:
-            print("start:", argv)
-            spawned = True
-            debug_obj.execv(argv, bBreakOnEntryPoint = False)
+    global spawned, exe_basic_name, out_file
+    pid = None
+    arg1 = sys.argv[1]
+    
+    if arg1.isdigit():
+        pid = int(arg1)
+    else:
+        exe = arg1
+        # Try to expand to absolute path if provided
+        exe_path = exe
+        if os.path.isabs(exe):
+            exe_path = exe
         else:
-            debug_obj.attach(pid)
-        
-        
+            # leave as name (we will match by basename)
+            exe_path = exe
 
-        
-        
-        # Debug loop
-        debug_obj.loop()
+        # 1) find running PIDs
+        pids = hook_lib.get_pids_by_name(exe_path)
+        if pids:
+            if len(pids) > 1:
+                print(f"Found {len(pids)} running process(es) named '{os.path.basename(exe_path)}': {pids} selecting first pid")
+            pid = pids[0]
+        else:
+            print(f"No running process named '{os.path.basename(exe_path)}' found. Attempting to start it...")
+            pid = hook_lib.try_start_executable(exe_path)
+            spawned = True
+    
+    
+    handle = hook_lib.get_handle(pid)
+    
+    executable_path = hook_lib.get_process_image_path(handle)
+    mods = hook_lib.enumerate_modules(handle, do_until_sucess = True)
+    #hook_lib.print_modules(mods)
+    
+    exe_basic_name = get_base_name(executable_path)
+    out_file = os.path.abspath('output'+os.sep+exe_basic_name+'.trace')
+    if os.path.exists(out_file):
+        os.remove(out_file)
+    
+    base_addr = mods[executable_path]['base']
 
-    finally:
-        debug_obj.stop()
+    
+    get_pdata(executable_path, base_addr, exe_basic_name)
+    
+    allocate_mem_and_inject_dll(handle, exe_entry_address)
+    
+    on_calltrace_dll_ready(handle)
+    #print(pdata_functions)
+    
 
 
 def get_base_name(filename: str) -> str:
@@ -233,7 +248,7 @@ def allocate_close(process, address_close_to_code):
     process.close_handle()
     return adddress_close_by
 
-def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, address_close_to_code: int) -> None:
+def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> None:
     """Allocate remote memory regions and inject the helper DLL."""
     global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages
 
@@ -247,7 +262,6 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
     ]
     #print(address_close_to_code)
     #exit(0)
-    process_handle = process.get_handle()
 
     # Allocate small utility region (writable)
     ctypes.windll.kernel32.VirtualAllocEx.restype = ctypes.c_ulonglong
@@ -296,53 +310,28 @@ def allocate_mem_and_inject_dll(event: Any, process: Any, pid: int, tid: int, ad
     if alocated_thread_storages == 0:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
     
-    #setup_thread_storage(event)
     
     # Inject helper DLL with MinHook-based hooks
-    run_loadlibrary_in_process(process_handle, process, "calltracer.dll", on_calltrace_dll_ready)
-    
-    process.close_handle()
-
-def alloc_thread_storage_done(event):
-    process = event.get_process()
-    pid = event.get_pid()
-    print("hooking")
-    hook_calls(process, event, pid)
+    run_loadlibrary_in_process(process_handle, "calltracer.dll") #FIXMEEE process
     
     
-def set_set_area_for_function_table_done(event):
-    process = event.get_process()
-    process_handle = process.get_handle()
-    #here we prealoacte memory for threads
-    injection_info = None
-    for stor_id in range(nr_of_prepared_alocations-1):
-        hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + stor_id*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nret")
-    
-
-    #These are not executed in series but lets hope this works    
-    injection_info = hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + (nr_of_prepared_alocations-1)*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nint3\nret")
-    external_breakpoints[injection_info['remote_code']+injection_info['code_size']-1] = alloc_thread_storage_done
     
     
-def setup_after_dll_loaded(process, event, pid):
+def setup_after_dll_loaded(process_handle):
     global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages
     
     
-    process_handle = process.get_handle()
     
-    #Set set_area_for_function_table
+    print("Set set_area_for_function_table")
     mem_size = str(area_for_function_table)
-    asf = "sub rsp, 40\nmov     rcx, "+mem_size+"\nmovabs rax, "+str(call_tracer_dll_func['set_area_for_function_table'])+"\n\ncall rax\nadd rsp, 40\nint3\nret"
+    asf = "sub rsp, 40\nmov     rcx, "+mem_size+"\nmovabs rax, "+str(call_tracer_dll_func['set_area_for_function_table'])+"\n\ncall rax\nadd rsp, 40\nret"
     injection_info = hook_lib.inject_asm(process_handle, asf)
-    external_breakpoints[injection_info['remote_code']+injection_info['code_size']-1] = set_set_area_for_function_table_done
     
-    
-    
+    print("set out file:", out_file, "using dll function:", call_tracer_dll_func['set_output_file'])
     str_addr, alloc_size = hook_lib.alloc_and_write_remote(process_handle, out_file.encode(locale.getpreferredencoding()) + b'\x00', False)
     set_output_file_asm = "sub rsp, 40\nmovabs     rcx, "+str(str_addr)+"\nmovabs rax, "+str(call_tracer_dll_func['set_output_file'])+"\n\ncall rax\nadd rsp, 40\nret"
     hook_lib.inject_asm(process_handle, set_output_file_asm)
     
-    process.close_handle()
     
     #save state requires you to push 128 bytes to rsp before calling lea   rsp, [rsp-128]
     #Setup save sate and restore state functions
@@ -515,7 +504,7 @@ jmp [r15 - 136] ;Jump back to return address of save call
     save_state_address = shell_code_address
     save_state_code = asm(save_state_asm, save_state_address)
     shell_code_address += len(save_state_code)
-    process.write(save_state_address, save_state_code)
+    hook_lib.write(process_handle, save_state_address, save_state_code)
     
     
     #restore state function
@@ -578,14 +567,19 @@ jmp [rsp - 136] ;jump to restore return address
     restore_state_address = shell_code_address
     restore_state_code = asm(restore_state_asm, restore_state_address)
     shell_code_address += len(restore_state_code)
-    process.write(restore_state_address, restore_state_code)
+    hook_lib.write(process_handle, restore_state_address, restore_state_code)
 
     
     
+    print("setting up thread storage")
     
+    #here we prealoacte memory for threads
+    injection_info = None
+    for stor_id in range(nr_of_prepared_alocations):
+        hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + stor_id*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nret")
     
-    # Hook stuff
-    #create_list_of_functions_to_hook(process)
+    print("hooking executable")
+    hook_calls(process_handle)
 
 
 def min_hooked_entry_hook(ujump_table_address: int, function_addres, callback: Callable[[Any], None], event: Any) -> None:
@@ -902,11 +896,15 @@ def get_function_containing(address):
         if function_start_addr <= address < function_end_addr:
             return entry
     return None
+    
 
-def hook_calls(process: Any, event: Any, pid: int) -> None:
+
+def hook_calls(process_handle) -> None:
     """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
     global disassembled_functions, function_map
     # Cache to avoid repeated disassembly of large binaries
+    
+    
     
     disassembled_cache_file = exe_basic_name + "_instructions_cache.json"
     save_cache = False
@@ -926,8 +924,8 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
             instructions = disassembled_functions[pdata_ordinal]
         else:
             try:
-                instcode = process.read(function_start_addr, func_len)
-                instructions = process.disassemble_string(function_start_addr, instcode)
+                instcode = hook_lib.read(process_handle, function_start_addr, func_len)
+                instructions = hook_lib.disasm(function_start_addr, instcode)
             except:
                 instructions = [] #DEBUG shit for disasemble failures
             
@@ -977,7 +975,7 @@ def hook_calls(process: Any, event: Any, pid: int) -> None:
         
         if pdata_ordinal not in function_exclusions:
             instructions = disassembled_functions[pdata_ordinal]
-            insert_break_at_calls(event, pid, instructions, function_id, function_start_addr, pdata_ordinal, doing_init)
+            insert_break_at_calls(process_handle, instructions, function_id, function_start_addr, pdata_ordinal, doing_init)
         
         call_map.append(function_map)
         
@@ -1075,7 +1073,7 @@ def add_instruction_redirect(
     function_address: int,
     is_init: bool,
     instructions: List[Tuple[int, int, str, str]],
-    process: Any,
+    process_handle,
     call_num,
     enter_callback: Callable[[Any], None],
     exit_callback: Callable[[Any], None],
@@ -1121,12 +1119,12 @@ def add_instruction_redirect(
     # Prefer full 5-byte JMP if possible, otherwise insert 1 byte (int3)
     if instructions_len >= 5:
         if jump_distance > 2147483647:
-            closer_alocation = allocate_close(process, jump_back_address)
+            closer_alocation = allocate_close(process, jump_back_address) # Have not botherd to move this to non winappdbg
             raise Exception("if you do double jumps the instructions we move might stop working")
             jump_distance2 = abs(jump_back_address - closer_alocation)
             if jump_distance2 > 2147483647:
                 raise Exception("closer alocation not close enogh: "+ str(jump_distance2)+ " "+ str(jump_distance))
-            process.write(closer_alocation, asm("jmp [RIP]") + struct.pack("<Q", jump_to_address))
+            hook_lib.write(process_handle, closer_alocation, asm("jmp [RIP]") + struct.pack("<Q", jump_to_address))
             if not closer_alocation:
                 raise ValueError("cant jump that far ("+str(instructiosn_len)+"), from: " + str(jump_back_address) + " to: "+ str(jump_to_address) + " dist: "+str(jump_distance)+" best would be to alocate memmory closer")
         insert_len = 5
@@ -1165,9 +1163,7 @@ def add_instruction_redirect(
         assert (jump_breakpoint not in external_breakpoints), "Overwriting old breakpoint"
         external_breakpoints[jump_breakpoint+1] = partial(go_jump_breakpoint, jump_to_address, dud_func)
         jump_breakpoints.append((jump_breakpoint, jump_to_address))
-        process_handle = process.get_handle()
-        hook_lib.inject_asm(process_handle, "sub rsp, 40\nmovabs     rcx, "+str(jump_breakpoint)+"\nmovabs     rdx, "+str(jump_to_address)+"\nmovabs rax, "+str(call_tracer_dll_func['add_jump_breakpoint'])+"\n\ncall rax\nadd rsp, 40\nint3\nret")
-        process.close_handle()
+        hook_lib.inject_asm(process_handle, "sub rsp, 40\nmovabs     rcx, "+str(jump_breakpoint)+"\nmovabs     rdx, "+str(jump_to_address)+"\nmovabs rax, "+str(call_tracer_dll_func['add_jump_breakpoint'])+"\n\ncall rax\nadd rsp, 40\nret")
     
     print(jump_type,'org:', instructions_asm, "(", instructions_len, ") write:", asmm, "bytes:", len(jmp_to_shellcode), "at:", insert_location, "jump_to_address:", jump_to_address, "diff:", jump_distance)
 
@@ -1493,7 +1489,7 @@ mov     [r15-100], rax
 
                     
                 asms = asm(dsg_asm, new_instruction_address)
-                inst = process.disassemble_string(new_instruction_address, asms)
+                inst = hook_lib.disasm(new_instruction_address, asms)
                 disasem = inst[0][2]
                 
                 lreg, lreg2, lreg2_mult, lindirect, loffset = asm2regaddr(inst[0])
@@ -1827,8 +1823,8 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
     shell_len = len(shellcode)
 
     shell_code_address_offset += shell_len + 20
-    process.write(jump_to_address, shellcode)
-    process.write(insert_location, jmp_to_shellcode)
+    hook_lib.write(process_handle, jump_to_address, shellcode)
+    hook_lib.write(process_handle, insert_location, jmp_to_shellcode)
 
     return call_num
 
@@ -1846,10 +1842,9 @@ def find_jumps_to_address(address):
         return jumps[address]
     return []
 
-def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int, function_ordinal: int, do_init: bool) -> None:
+def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int, function_ordinal: int, do_init: bool) -> None:
     """Insert breakpoints at every CALL within a function's instruction list."""
     global shell_code_address_offset
-    process = event.get_process()
     
     func_id = get_function_id(function_address)
     
@@ -1940,7 +1935,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
                     function_address,
                     True,
                     init_instructions,
-                    process,
+                    process_handle,
                     call_num,
                     partial(function_call_break_point, function_id, instruction_address),
                     partial(function_called_break_point, function_id, instruction_address),
@@ -1975,7 +1970,7 @@ def insert_break_at_calls(event: Any, pid: int, instructions: List[Tuple[int, in
                 function_address,
                 False,
                 replace_instructions,
-                process,
+                process_handle,
                 call_num,
                 partial(function_call_break_point, function_id, instruction_address),
                 partial(function_called_break_point, function_id, instruction_address),
@@ -2564,36 +2559,16 @@ def inject_assembly(process: Any, code_list: list, return_address: int) -> int:
 # DLL injection helpers
 # -----------------------------
 
-def run_loadlibrary_in_process(h_process: int, process: Any, dll_path: str, callback) -> None:
+def run_loadlibrary_in_process(h_process: int, dll_path: str) -> None:
     """Write dll_path to target and call LoadLibraryA via injected assembly."""
     global load_dll_tid
     dll_path = os.path.abspath(dll_path)
     print("trying to inject dll")
-    thread = process.inject_dll(dll_path, bWait = False)
-    load_dll_tid = thread.get_tid()
-    print("Not waiting for new dll")
-    return 
+    thread = hook_lib.load_library_in_remote(h_process, dll_path)
     
-    raise Exception("dead code")
-    dll_path_bytes = dll_path.encode("ascii") + b"\x00"
-
-    ctypes.windll.kernel32.VirtualAllocEx.restype = ctypes.c_ulonglong
-    name_remote_memory = ctypes.windll.kernel32.VirtualAllocEx(h_process, None, 1000, 0x3000, 0x04)
-    if not name_remote_memory:
-        raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
-
-    process.write(name_remote_memory, dll_path_bytes)
-
-    kernel32 = process.get_module_by_name("kernel32.dll")
-    load_library_addr = kernel32.resolve("LoadLibraryA")
-
-    asm_code_to_run.append((
-        f"movabs rcx, {name_remote_memory};movabs rax, {load_library_addr};call rax;",
-        partial(loaded_dll, dll_path, callback),
-    ))
     
 
-def on_calltrace_dll_ready(event):
+def on_calltrace_dll_ready(handle):
     global call_trace_dll_ready
     if call_trace_dll_ready:
         return
@@ -2602,9 +2577,9 @@ def on_calltrace_dll_ready(event):
     dll_name = "calltracer.dll"
     pe = pefile.PE(dll_name)
     basename = os.path.basename(dll_name)
-    basic_name, ext = os.path.splitext(basename)
-    if basic_name in loaded_modules:
-        base_addr = loaded_modules[basic_name]
+    mods = hook_lib.enumerate_modules(handle, base_name = True)
+    if basename in mods:
+        base_addr = mods[basename]["base"]
     else:
         print("calltracer dll not loaded when thread exited")
         return
@@ -2625,11 +2600,9 @@ def on_calltrace_dll_ready(event):
         # Hook all functions listed in .pdata
         #hook_functions(process, event, pid)
         
-        process = event.get_process()
-        pid = process.get_pid()
     else:
         raise Exception("dll has no exports")
-    setup_after_dll_loaded(process, event, pid)
+    setup_after_dll_loaded(handle)
     
     
 
@@ -2692,4 +2665,4 @@ def get_pdata(filen: str, base_addr: int, exe_basic_name: str) -> None:
 # -----------------------------
 if __name__ == "__main__":
     # If a process is already running we attach; otherwise we create it.
-    start_or_attach_debugger(sys.argv[1:])
+    start_or_attach(sys.argv[1:])
