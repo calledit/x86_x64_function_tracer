@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <atomic>
 #include <mutex>
+#include <shared_mutex>
 
 extern "C" {
     __declspec(dllexport) void print_to_file(const char* str);
@@ -22,6 +23,7 @@ extern "C" {
     __declspec(dllexport) uint64_t dump_trace(uint64_t thread_storage_address);
     __declspec(dllexport) uint64_t dump_all_traces();
     __declspec(dllexport) uint64_t set_output_file(char* file_path);
+    __declspec(dllexport) uint64_t add_jump_breakpoint(void* addr, void* target);
 }
 
 uint64_t area_for_xsave64 = 12228;
@@ -72,6 +74,19 @@ void init();
 HANDLE current_process;
 
 std::mutex file_mutex;
+
+static std::unordered_map<uint64_t, uint64_t> jump_breakpoints;
+static std::shared_mutex jump_rwlock;
+static PVOID gVehHandle = nullptr;
+
+
+uint64_t add_jump_breakpoint(void* addr, void* target)
+{
+
+    std::unique_lock<std::shared_mutex> wlock(jump_rwlock); // exclusive
+    jump_breakpoints[(uint64_t)addr] = (uint64_t)target;
+    return 0;
+}
 
 uint64_t alloc_thread_storage(uint64_t out_address)
 {
@@ -256,6 +271,10 @@ BOOL APIENTRY DllMain(HMODULE hModule,
         break;
     case DLL_PROCESS_DETACH:
         dump_all_traces();
+        if (gVehHandle) {
+            RemoveVectoredExceptionHandler(gVehHandle);
+            gVehHandle = nullptr;
+		}
         bufer_2_file();
         //Dumb llm code
         //g_shutdown_requested.store(true, std::memory_order_relaxed);
@@ -441,12 +460,69 @@ int reset_stack_trace() {
 
 }
 
+//this wont work if there is a debugger attached
+static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
+{
+    auto* rec = ep->ExceptionRecord;
+    auto* ctx = ep->ContextRecord;
 
+    if (rec->ExceptionCode == EXCEPTION_BREAKPOINT) {
+        // Read the opcode at RIP to know how far to skip.
+        // 0xCC       = 1-byte INT3
+        // 0xCD 0x03  = 2-byte INT 3
+
+        uint64_t rip = ep->ContextRecord->Rip;
+
+        print("got breakpoint: " + std::to_string(rip));
+
+        std::shared_lock<std::shared_mutex> lock(jump_rwlock);
+        auto it = jump_breakpoints.find(rip);
+        if (it != jump_breakpoints.end()) {
+            ep->ContextRecord->Rip = it->second;   // redirect
+            return EXCEPTION_CONTINUE_EXECUTION;
+        }
+
+		//this is a normal breakpoint not a jump breakpoint we set
+        return EXCEPTION_CONTINUE_SEARCH;
+
+        BYTE* ip = reinterpret_cast<BYTE*>(ctx->Rip);
+        SIZE_T skip = 0;
+
+        if (ip[0] == 0xCC) {
+            skip = 1;
+        }
+        else if (ip[0] == 0xCD && ip[1] == 0x03) {
+            skip = 2;
+        }
+        else {
+            // Some other breakpoint-like instruction (e.g., ICEBP 0xF1) also ends up as BREAKPOINT in practice.
+            // Conservative default: skip 1 byte to avoid re-faulting forever.
+            skip = 1;
+        }
+
+        ctx->Rip += skip;
+
+        
+
+        // If this breakpoint replaced a real byte (i.e., you planted it),
+        // you probably want to restore the original byte before resuming.
+
+        return EXCEPTION_CONTINUE_EXECUTION; // resume as if nothing happened
+    }
+    else if (rec->ExceptionCode == EXCEPTION_SINGLE_STEP) {
+        // Hardware breakpoints / TF traps also come here.
+        // Handle if you care; otherwise let others handle it.
+        return EXCEPTION_CONTINUE_SEARCH;
+    }
+
+    return EXCEPTION_CONTINUE_SEARCH;
+}
 
 
 void init() {
 	FILE* fp;
 	
+	//Not used remove later
     current_process = GetCurrentProcess();
 
 	fopen_s(&fp, "C:\\dbg\\debug_output.txt", "w");
@@ -455,7 +531,15 @@ void init() {
         fclose(fp);
     }
 	
+    
+
+    gVehHandle = AddVectoredExceptionHandler(/*First=*/1, BreakpointVeh);
+    if (!gVehHandle) {
+        print("AddVectoredExceptionHandler failed");
+    }
+
     bufer_2_file();
+
 }
 
 

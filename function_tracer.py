@@ -97,6 +97,8 @@ ref_instructions = {}
 # Initialize Keystone for x64.
 ks = Ks(KS_ARCH_X86, KS_MODE_64)
 
+jump_breakpoints = []
+
 
 #Thread Storage
 thread_storage_list_address = None
@@ -1148,10 +1150,10 @@ def add_instruction_redirect(
         jmp_to_shellcode = asm(asmm, insert_location)
     elif jump_type == "2byte":
         jmp_to_shellcode = b"\xCC" + (b"\x90" * extra_bytes)
-        jump_breakpoint = insert_location + 1
+        jump_breakpoint = insert_location
     elif jump_type == "1byte":
         jmp_to_shellcode = b"\xCC"
-        jump_breakpoint = insert_location + 1
+        jump_breakpoint = insert_location
     
     if forbid_break_point_jumps:
         if jump_type == "2byte" or jump_type == "1byte":
@@ -1161,7 +1163,11 @@ def add_instruction_redirect(
     
     if jump_breakpoint is not None:
         assert (jump_breakpoint not in external_breakpoints), "Overwriting old breakpoint"
-        external_breakpoints[jump_breakpoint] = partial(go_jump_breakpoint, jump_to_address, dud_func)
+        external_breakpoints[jump_breakpoint+1] = partial(go_jump_breakpoint, jump_to_address, dud_func)
+        jump_breakpoints.append((jump_breakpoint, jump_to_address))
+        process_handle = process.get_handle()
+        hook_lib.inject_asm(process_handle, "sub rsp, 40\nmovabs     rcx, "+str(jump_breakpoint)+"\nmovabs     rdx, "+str(jump_to_address)+"\nmovabs rax, "+str(call_tracer_dll_func['add_jump_breakpoint'])+"\n\ncall rax\nadd rsp, 40\nint3\nret")
+        process.close_handle()
     
     print(jump_type,'org:', instructions_asm, "(", instructions_len, ") write:", asmm, "bytes:", len(jmp_to_shellcode), "at:", insert_location, "jump_to_address:", jump_to_address, "diff:", jump_distance)
 
