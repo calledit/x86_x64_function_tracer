@@ -623,8 +623,6 @@ def disasm(address, code):
             else:
                 disasm = mnemonic
 
-            # Get the instruction bytes as a hexadecimal dump.
-            hexdump = hexadecimal(code[offset : offset + length])
 
         # On error add a "define constant" instruction.
         # The exact instruction depends on the architecture.
@@ -638,9 +636,7 @@ def disasm(address, code):
             else:
                 length = 4
 
-            # Get the skipped bytes as a hexadecimal dump.
             skipped = code[offset : offset + length]
-            hexdump = hexadecimal(skipped)
 
             # Build the "define constant" instruction.
             # On Intel processors it's "db".
@@ -667,7 +663,6 @@ def disasm(address, code):
                 address + offset,
                 length,
                 disasm,
-                hexdump,
             )
         )
 

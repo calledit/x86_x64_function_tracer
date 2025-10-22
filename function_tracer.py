@@ -110,7 +110,6 @@ area_for_tracing_results = 8*10000000
 area_for_xsave64 = 12228 #we give xsave 8192 12228 to save its data
 nr_of_prepared_alocations = 10
 
-use_python_tracing = False
 
 spawned = False
 call_trace_dll_ready = False
@@ -582,309 +581,6 @@ jmp [rsp - 136] ;jump to restore return address
     hook_calls(process_handle)
 
 
-def min_hooked_entry_hook(ujump_table_address: int, function_addres, callback: Callable[[Any], None], event: Any) -> None:
-    """
-    Breakpoint handler for function entry via MinHook trampoline wrapper.
-    I am a bit afraid that this might get called multiple times as code in a function may jump bak to the first instruction.
-    This is somewhat unlikly as the first few instructions are generally used to set up the stack and stuff like that.
-    This may register to many return addreses when call stack optimizations are used. WIll probaly need a fix for that.
-    Main "issue" is tail call optimization. min_hooked_entry_hook will execute even when it is jumped to and not called. ie part of tail call optimization.
-    This means ret_replacements will keep growing and not get poped at tthe end. Making it out of sync with reality.
-    """
-    thread = event.get_thread()
-    tid = thread.get_tid()
-
-    if tid not in ret_replacements:
-        ret_replacements[tid] = {ujump_table_address: []}
-    if ujump_table_address not in ret_replacements[tid]:
-        ret_replacements[tid][ujump_table_address] = []
-
-    process = event.get_process()
-    context = thread.get_context()
-    stack_pointer = context["Rsp"]
-    return_address = read_ptr(process, stack_pointer)
-    #print("function_addres:", function_addres, "stack_pointer:", stack_pointer, 'return_address:', return_address)
-    
-    #print("saving return address:", return_address, ujump_table_address)
-
-    ret_replacements[tid][ujump_table_address].append(return_address)
-    callback(event)
-
-
-def min_hooked_exit_hook(ujump_table_address: int, callback: Callable[[Any], None], event: Any) -> None:
-    """Breakpoint handler for function exit; returns to original address and calls callback."""
-    tid = event.get_tid()
-    original_return_address = ret_replacements[tid][ujump_table_address].pop() 
-    #print("jumping to:", original_return_address, ujump_table_address)
-    #event.get_thread().set_pc(original_return_address)
-    callback(event)
-    
-def instrument_function(instructions, process, enter_callback):
-    """Takes list of instrucitons for a fuction and hooks the function"""
-    assert (len(instructions) != 0), "function cant be zero instructions long"
-    function_addres = instructions[0][0]
-    #print(instructions)
-    clean_instructions(instructions, process, enter_callback)
-    #exit(0)
-
-def clean_instructions(instructions, process, enter_callback):
-    global shell_code_address_offset, shell_code_address
-    raise Exception("this function is dead code")
-    clean_code = []
-    function_addres = instructions[0][0]
-    function_id = get_function_id(function_addres)
-    print("instrumenting:", function_id)
-    new_location = shell_code_address + shell_code_address_offset
-    new_instruction_address = new_location
-    free_space = 0
-    jump_asm = False
-    
-    #Add entry tracing
-    clean = asm(f"int3", new_instruction_address)
-    clean_code.append(clean)
-    new_instruction_address += len(clean)
-    external_breakpoints[new_location+1] = enter_callback
-    old_asm = ""
-    new_asm = ""
-    for instruction in instructions:
-        instruction_address = instruction[0]
-        instruction_len = instruction[1]
-        instruction_asm = instruction[2]
-        instruction_parts = instruction_asm.split(" ")
-        
-        if instruction_parts[0] == "call":
-            if free_space == 0:
-                raise Exception("cant move first instruction if it is a call")
-            else:
-                break
-            
-        
-        old_asm += instruction_asm+";"
-        
-        free_space += instruction_len
-        
-        #If a insctruction is int3 we cant move it cause other stuff may use it
-        if instruction_asm == "int3":
-            print("int3 already at address:", instruction_address)
-            return
-
-        # RIP-relative handling
-        if "rip +" in instruction_asm or "rip -" in instruction_asm:
-            print("Accounting for altered RIP", instruction_asm)
-            
-            convs  = ""
-            if "rip +" in instruction_asm:
-                sign = "+"
-            elif "rip -" in instruction_asm:
-                sign = "-"
-                convs = "-"
-            else:
-                raise ValueError("Not Implemnted")
-            
-            initial_part = instruction_asm.split("]")[0]
-            arg_part = initial_part.split("[")[-1]
-            parts = arg_part.split(" ")
-            off_str = convs + parts[-1]
-            off = int(off_str, 16)
-            diff = new_instruction_address - instruction_address
-            new_arg_part = "rip +"+ str(off-diff)
-
-            
-            
-            instruction_asm = instruction_asm.replace(arg_part, new_arg_part)
-
-        
-        clean = asm(instruction_asm, new_instruction_address)
-        #print('old:', instruction[2], 'new:', instruction_asm)
-        clean_code.append(clean)
-        new_instruction_address += len(clean)
-        
-        new_asm += instruction_asm+";"
-        
-        
-            
-        #break
-        if free_space >= 5:
-            extra_bytes = max(free_space - 5, 0)#jmp is 5 bytes long
-            jump_asm = f"jmp {new_location}" + (";nop" * extra_bytes)
-            break
-        
-        if instruction_parts[0] == "call":
-            break
-    
-    print('old:', old_asm, 'new:', new_asm)
-    
-    #Add jumping back to shell code
-    jump_back_address = function_addres + free_space
-    clean = asm(f"jmp {jump_back_address}", new_instruction_address)
-    clean_code.append(clean)
-    new_instruction_address += len(clean)
-    
-    shellcode = b"".join(clean_code)
-    shell_len = len(shellcode)
-    
-    shell_code_address_offset += shell_len + 20
-    #print(shell_code_address_offset)
-    
-    process.write(new_location, shellcode)
-    
-    #if the cleaing managed to get enogh bytes
-    if jump_asm:
-        print(jump_asm)
-        jmp_to_shellcode = asm(jump_asm, function_addres)
-        print('jump len:', free_space, len(jmp_to_shellcode))
-    else:#else we use a breakpoint jump, we skip the first tracing breakpoint if we use this method
-        external_breakpoints[function_addres+1] = partial(go_jump_breakpoint, new_location+1, enter_callback)
-        extra_bytes = max(free_space - 1, 0)#0xCC is 1 bytes long
-        jmp_to_shellcode = b"\xCC" + (b"\x90" * extra_bytes)
-    
-    process.write(function_addres, jmp_to_shellcode)
-    print("wrote stuff")
-    
-        
-
-
-def min_hook_enabled(event: Any) -> None:
-    thread = event.get_thread()
-    context = thread.get_context()
-    result = context["Rax"]
-    print("min_hook_enabled:", result)
-    
-    
-def ran_finally(save_place, event: Any) -> None:
-    global is_in_injected_code
-    del external_breakpoints[save_place]
-    thread = event.get_thread()
-    context = thread.get_context()
-    result = context["Rax"]
-    address = event.get_thread().get_pc()
-    print("ran_finally:", address)
-    is_in_injected_code = False
-    #exit()
-    
-def before_running(save_place, event: Any) -> None:
-    del external_breakpoints[save_place]
-    thread = event.get_thread()
-    context = thread.get_context()
-    result = context["Rax"]
-    address = event.get_thread().get_pc()
-    print("before_running:", address, thread.get_tid())
-    
-def after_running(event: Any) -> None:
-
-    thread = event.get_thread()
-    context = thread.get_context()
-    result = context["Rax"]
-    address = event.get_thread().get_pc()
-    print("after_running:", address)
-
-
-def submit_hook_function_list_for_injection() -> None:
-    """Queue MinHook setup calls for all functions_to_hook and queue a global enable."""
-    global shell_code_address_offset
-    raise Exception("dead code")
-    hook_function = call_tracer_dll_func["hook_function"]
-    enable_function = call_tracer_dll_func["enable_hooks"]
-    
-    for target_fn_addr, enter_callback, exit_callback in functions_to_hook:
-        print("hook", target_fn_addr, "using:", call_tracer_dll_func["hook_function"]) 
-        jump_table_address = shell_code_address + shell_code_address_offset
-        shell_code_address_offset += 800  # ~800 bytes per entry is probably enough
-
-        asm_code_to_run.append((
-            f"movabs rcx, {target_fn_addr};"
-            f"movabs rdx, {jump_table_address};"
-            f"movabs r8, {shell_code_address};"
-            f"movabs rax, {hook_function};"
-            "call rax",
-            partial(min_hooked_function, target_fn_addr, jump_table_address, enter_callback, exit_callback),
-        ))
-
-    # Enable hooks once all are queued
-    if len(functions_to_hook) != 0:
-        print("enable func_location:", enable_function)
-        asmm = (
-            f"movabs rax, {enable_function};"
-            "call rax;"
-        )
-        asm_code_to_run.append((asmm, min_hook_enabled))
-
-
-breakpoint_active = False
-def deal_with_breakpoint(event: Any, process: Any, pid: int, tid: int, address: int) -> bool:
-    """Handle breakpoint and injection state machine."""
-    global in_loading_phase, is_in_injected_code, breakpoint_active, asm_code_to_run
-
-    
-    known_ = False
-    if address in external_breakpoints:
-        callb = external_breakpoints[address]
-        known_ = True
-        
-    #print("deal_with_breakpoint:", address, "known:", known_, address == exe_entry_address)
-    
-    inject_ok = True
-    #if address in external_breakpoints or (in_loading_phase and address == exe_entry_address):
-    #    inject_ok = True
-    
-    
-    
-        
-    #print("inject_ok:", inject_ok, "known:", known_, "is_in_injected_code:", is_in_injected_code, 'in_loading_phase:', in_loading_phase, 'len:', len(asm_code_to_run))
-    #if len(asm_code_to_run) > 1:
-    #    return
-    #    exit()
-    if len(asm_code_to_run) != 0 and not is_in_injected_code and inject_ok:
-        print("jumping to injected code", len(asm_code_to_run))
-        jump_to_after = address
-        
-        print("running:", len(asm_code_to_run), "then jumping back to:", jump_to_after)
-        jump_to_next = inject_assembly(process, asm_code_to_run, jump_to_after)
-        asm_code_to_run = []
-            
-        is_in_injected_code = True
-        #break_point_location = address
-
-        # For WinAppDbg breakpoints (event.debug.break_at), address points to the 0xCC byte; for others, it's the next instruction.
-        #if address != exe_entry_address:
-        #    break_point_location -= 1
-
-        #exit()
-
-        # Disable entry breakpoint so it isn't copied while running MinHook
-        breakpoint_active = False
-        event.debug.dont_break_at(pid, exe_entry_address)
-        event.get_thread().set_pc(jump_to_next)
-        return True
-    
-    
-    before = is_in_injected_code
-    if address in external_breakpoints:
-        callb(event)
-    
-
-    if in_loading_phase and not is_in_injected_code and before and not breakpoint_active:
-        print("Re-enable breakpoint so it triggers next time", len(asm_code_to_run))
-        # Re-enable breakpoint so it triggers next time
-        #event.debug.break_at(pid, exe_entry_address)
-        breakpoint_active = True
-
-    if len(asm_code_to_run) == 0 and in_loading_phase and not is_in_injected_code and inject_ok:
-        print("Loading phase done; disabling entry breakpoint")
-        #if address != exe_entry_address:#You cant remove  breakpoint you are currently on
-        #event.debug.dont_break_at(pid, exe_entry_address)
-        breakpoint_active = False
-        in_loading_phase = False
-
-    if known_:
-        return True
-    else:
-        print("unknown break_point called", tid, address)
-        dump_trace(event, tid)
-        debug_reg_dump_break(event)
-
-
-    return False
 
 def get_function_containing(address):
     """
@@ -985,66 +681,14 @@ def hook_calls(process_handle) -> None:
     map_file = "output\\"+exe_basic_name+'_map.json'
     with open(map_file, "w") as f:
             json.dump(call_map, f, indent=2)
+            
+    loaded_modules = hook_lib.enumerate_modules(process_handle, base_name = True)
+    module_file = "output\\"+exe_basic_name+'_modules.json'
+    with open(module_file, "w") as f:
+            json.dump(loaded_modules, f, indent=2)
     
     
 
-
-def create_list_of_functions_to_hook(process) -> None:
-    """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
-    global disassembled_functions
-    raise Exception("DEAD CODE")
-    # Cache to avoid repeated disassembly of large binaries
-    
-    disassembled_cache_file = exe_basic_name + "_instructions_cache.json"
-    save_cache = False
-    if len(disassembled_functions) == 0:
-        if os.path.exists(disassembled_cache_file) and time.time() - os.path.getmtime(disassembled_cache_file) < 12 * 3600:
-            with open(disassembled_cache_file, "r") as f:
-                disassembled_functions = json.load(f)
-
-    for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
-        function_id = get_function_id(function_start_addr)
-        DO_hook = True
-        
-        # Disassemble and patch CALL instructions in the function body
-        if len(disassembled_functions) > pdata_ordinal:
-            instructions = disassembled_functions[pdata_ordinal]
-        else:
-            instcode = process.read(function_start_addr, function_end_addr - function_start_addr)
-            instructions = process.disassemble_string(function_start_addr, instcode)
-            disassembled_functions.append(instructions)
-            save_cache = True
-        
-        first_instruction = instructions[0][2]
-        #VLC Does not like it when you move breakpoints
-        if first_instruction in ('int3', 'ret'):
-            #print("yes", instructions[0][2])
-            DO_hook = False
-            #exit()
-        
-        # Queue MinHook entry/exit wrapping for this function
-        if DO_hook:
-            functions_to_hook.append(
-                (
-                    function_start_addr,
-                    partial(function_enter_break_point, function_id, function_start_addr),
-                    partial(function_exit_break_point, function_id, function_start_addr),
-                )
-            )
-
-    if save_cache:
-        with open(disassembled_cache_file, "w") as f:
-            json.dump(disassembled_functions, f)
-
-
-def dud_func(event):
-    pass
-
-def debug_reg_dump_break(event: Any) -> None:
-
-    thread = event.get_thread()
-    context = thread.get_context(ContextFlags=win32.CONTEXT_ALL)
-    print("DEBUG:", context)
 
 def capstone_2_keystone(instruction_asm):
 #fix differance betwen capstone and keystone asm
@@ -1075,8 +719,6 @@ def add_instruction_redirect(
     instructions: List[Tuple[int, int, str, str]],
     process_handle,
     call_num,
-    enter_callback: Callable[[Any], None],
-    exit_callback: Callable[[Any], None],
 ) -> Tuple[Optional[int], int]:
     """Patch a single instruction (typically CALL) to redirect into shellcode that wraps it with int3 breakpoints.
 
@@ -1160,8 +802,6 @@ def add_instruction_redirect(
             return call_num
     
     if jump_breakpoint is not None:
-        assert (jump_breakpoint not in external_breakpoints), "Overwriting old breakpoint"
-        external_breakpoints[jump_breakpoint+1] = partial(go_jump_breakpoint, jump_to_address, dud_func)
         jump_breakpoints.append((jump_breakpoint, jump_to_address))
         hook_lib.inject_asm(process_handle, "sub rsp, 40\nmovabs     rcx, "+str(jump_breakpoint)+"\nmovabs     rdx, "+str(jump_to_address)+"\nmovabs rax, "+str(call_tracer_dll_func['add_jump_breakpoint'])+"\n\ncall rax\nadd rsp, 40\nret")
     
@@ -1172,9 +812,7 @@ def add_instruction_redirect(
         # Tracking assembly: adds a breakpoint before and after the real function.
         # Saves the return address, modifies it to point to the post-call int3, then jumps.
         int3_bef = ""
-        if use_python_tracing:
-            int3_bef = "int 3;"
-        
+
         
         
         
@@ -1391,20 +1029,12 @@ mov     [r15-100], rax
         final_jump_code = asm("lea rsp, [rsp+140];jmp [rsp-108]", jump_table_address + len(exit_func_call_code))#"ret"
         
         f_break = b""
-        if use_python_tracing:
-            f_break = b"\xCC"
             
         new_function_start_address = jump_table_address + len(enter_func_call_code) + len(function_caller) + 16 + len(exit_func_call_code) + len(f_break) + len(final_jump_code)
         jump_code = enter_func_call_code + function_caller + struct.pack("<Q", new_function_start_address) + struct.pack("<Q", new_function_return_address) + exit_func_call_code + f_break + final_jump_code
         
         final_breakpoint = len(jump_code)+jump_table_address - len(final_jump_code)
         
-        if use_python_tracing:
-            function_id = get_function_id(function_address)
-            enter_func_callback = partial(function_enter_break_point, function_id, function_address)
-            exit_func_callback = partial(function_exit_break_point, function_id, function_address)
-            external_breakpoints[jump_write_address + 2] = partial(min_hooked_entry_hook, jump_table_address, function_address, enter_func_callback)
-            external_breakpoints[final_breakpoint] = partial(min_hooked_exit_hook, jump_table_address, exit_func_callback)
         #print(len(jump_code))
         #exit()
         code.append(jump_code)
@@ -1575,16 +1205,6 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
             code.append(call_func_call_code)
             new_instruction_address += len(call_func_call_code)
             
-            if use_python_tracing:
-                # Add entry breakpoint in the shellcode
-                new_code = b"\xCC"
-                code.append(new_code)
-                new_instruction_address += len(new_code)
-                break_point_entry = new_instruction_address
-                
-                assert (break_point_entry not in external_breakpoints), "Overwriting old breakpoint"
-                external_breakpoints[break_point_entry] = partial(enter_callback, call_num, reg, reg2, reg2_mult, indirect, offset)
-
         
             if reg is None and offset is not None:
                 static_call = offset
@@ -1753,24 +1373,6 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
         if instruction_parts[0] == "call":
             if call_num not in excluded_calls and do_call_tracing:
                 
-                if use_python_tracing:
-                    # Add exit breakpoint and final jump back to original flow
-                    code.append(b"\xCC")
-                    new_instruction_address += 1
-                    break_point_exit = new_instruction_address
-                    assert (break_point_exit not in external_breakpoints), "Overwriting old breakpoint"
-                    external_breakpoints[break_point_exit] = partial(exit_callback, call_num)
-                
-                
-                #function_called_trace_point(uint64_t function_num, uint64_t call_address, uint64_t return_address);
-                #call_asm = (
-                #    f"movabs     rcx, {function_ordinal};"    # first argument function_address
-                #    f"movabs     rdx, {instruction_address};"    # second argument call_address
-                #    f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
-                #    f"movabs     rax, {call_tracer_dll_func['function_called_trace_point']};"
-                #    "call    rax;"
-                #)
-                
                 call_asm = strip_semicolon_comments("""
                 add r12, """+str(area_for_xsave64)+"""
 
@@ -1828,11 +1430,6 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
 
     return call_num
 
-
-def go_jump_breakpoint(jump_to_address: int, callback: Callable[[Any], None], event: Any) -> None:
-    print("go_jump_breakpoint", jump_to_address)
-    event.get_thread().set_pc(jump_to_address)
-    callback(event)
 
 def find_jumps_to_address(address):
     """
@@ -1937,8 +1534,6 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                     init_instructions,
                     process_handle,
                     call_num,
-                    partial(function_call_break_point, function_id, instruction_address),
-                    partial(function_called_break_point, function_id, instruction_address),
                 )
         else:
             call_replace_instructions.append(instruction)
@@ -1972,8 +1567,6 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                 replace_instructions,
                 process_handle,
                 call_num,
-                partial(function_call_break_point, function_id, instruction_address),
-                partial(function_called_break_point, function_id, instruction_address),
             )
              
 def find_moved_instruction(address):
@@ -1983,280 +1576,6 @@ def find_moved_instruction(address):
             results.append((org_addr, new_start, new_end))
     return results
     
-
-def on_debug_event_debug(event: Any, reduce_address: bool = False) -> None:
-    try:
-        
-        
-        pid = event.get_pid()
-        tid = event.get_tid()
-        process = event.get_process()
-        bits = process.get_bits()
-        address = event.get_thread().get_pc()
-
-        name = event.get_event_name()
-        code = event.get_event_code()
-        
-        print(pid, address, name)
-    except Exception as e:
-            
-        print("got error")
-        print(e)
-        traceback.print_stack()
-        traceback.print_exc()
-    
-
-def on_debug_event(event: Any, reduce_address: bool = False) -> None:
-    """Main WinAppDbg event callback."""
-    global exe_basic_name, loaded_modules, exe_entry_address, allocate_and_inject_dll, breakpoint_active, lowest_tid_id, out_file
-
-    try:
-        
-        
-        pid = event.get_pid()
-        tid = event.get_tid()
-        process = event.get_process()
-        bits = process.get_bits()
-        address = event.get_thread().get_pc()
-
-        name = event.get_event_name()
-        code = event.get_event_code()
-
-        # Exceptions
-        if code == win32.EXCEPTION_DEBUG_EVENT:
-            try:
-                name = event.get_exception_description()
-            except Exception as e:
-                name = "UnknownDebugerException"
-            exception_code = event.get_exception_code()
-
-            if name == "Breakpoint":
-                
-                _ = deal_with_breakpoint(event, process, pid, tid, address)
-                return
-               
-            moved_addresses = find_moved_instruction(address)
-            func_entry = get_function_containing(address)
-            
-            probable_module_name = get_module_from_address(address)
-            
-            print("non-breakpoint EXCEPTION_DEBUG_EVENT:", name, "exception_code:", exception_code, "address:", address, "tid:", tid, "module:", probable_module_name, "move:", moved_addresses, func_entry)
-            
-            
-            
-            debug_reg_dump_break(event) #show registers
-            if func_entry is not None:
-                func_id = get_function_id(func_entry[0])
-                assembly = disassembled_functions[func_entry[3]]
-                print("addres is in:", func_id, "func_asm:", assembly)
-            
-            try:
-                instructions = process.disassemble(address, 20)
-                print("instructions:", instructions)
-            except Exception as e:
-                print("failed to disassemble at exception address")
-                
-            #Not sure if we need to dump here but we do anyways
-            for list_entry_tid, thread_storage_address in thread_storage_list_addresses.items():
-                dump_trace(event, tid)
-            print("dumped trace")
-            
-            return
-
-        # Module load / process start
-        if code in (win32.LOAD_DLL_DEBUG_EVENT, win32.CREATE_PROCESS_DEBUG_EVENT):
-            filename = event.get_filename()
-            base_addr = event.get_module_base()
-            if filename is not None:
-                basic_name = get_base_name(filename)
-            else:
-                basic_name = 'no_file_addr_'+str(base_addr)
-            pdb_name = os.path.join("pdbs", basic_name + ".pdb")
-            print("loaded dll:", filename)
-
-            
-            loaded_modules[basic_name] = base_addr
-            
-            if exe_basic_name is not None:
-                module_file = "output\\"+exe_basic_name+'_modules.json'
-                with open(module_file, "w") as f:
-                        json.dump(loaded_modules, f, indent=2)
-
-            # TODO: Load PDBs if available (not implemented)
-
-            if basic_name == "kernel32":
-                if allocate_and_inject_dll:
-                    allocate_mem_and_inject_dll(event, process, pid, tid, exe_entry_address)
-                    allocate_and_inject_dll = False
-                    
-                    
-                    
-                    # add a breakpoint on the entry point
-                    event.debug.break_at(pid, exe_entry_address, exe_entry)
-                    breakpoint_active = True
-                
-        if name == "Process termination event":
-            #all threads should have already closed but we do this anyway
-            for list_entry_tid, thread_storage_address in thread_storage_list_addresses.items():
-                dump_trace(event, tid)
-        if name == "Process creation event":
-            filename = event.get_filename()
-            basic = get_base_name(filename)
-            exe_basic_name = basic
-            out_file = os.path.abspath('output'+os.sep+exe_basic_name+'.trace')
-            if os.path.exists(out_file):
-                os.remove(out_file)
-            base_addr = event.get_module_base()
-            
-            
-            get_pdata(filename, base_addr, exe_basic_name)
-            print("Process started", "exe_basic_name:", exe_basic_name, "pc:", address, "base_addr:", base_addr, "entry:", exe_entry_address, "main thread:", tid, "bits:", bits)
-
-        if name == "Thread creation event":
-            try:
-                process.scan_modules()
-            except Exception:
-                pass
-
-            #setup_thread_storage(event)
-        
-        if name == "Thread termination event":
-            if load_dll_tid != -1 and tid == load_dll_tid:
-                on_calltrace_dll_ready(event)
-            dump_trace(event, tid)
-        
-        #print("event_name", name)
-    except Exception as e:
-        
-        #we quit save all traces
-        for list_entry_tid, thread_storage_address in thread_storage_list_addresses.items():
-            dump_trace(event, tid)
-            
-        print("got error")
-        print(e)
-        traceback.print_stack()
-        traceback.print_exc()
-        exit()
-
-
-def setup_thread_storage(event, tid = None):
-    global thread_storage_list_address, area_for_function_table, area_for_return_addr_linked_list
-    
-    if tid is None:
-        tid = event.get_tid()
-    if thread_storage_list_address is None:
-        print("Adding thread to list of threads to give memmory later", tid)
-        threads_to_setup.append(tid)
-        return False
-    
-    process = event.get_process()
-    process_handle = process.get_handle()
-            
-            
-    if thread_storage_list_address is not None and tid not in thread_storage_list_addresses:
-        
-            
-        
-        thread_storage_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list + area_for_tracing_results, 0x3000, 0x04)
-        print("setup storage for new thread", tid, thread_storage_address)
-        if not thread_storage_address:
-            raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
-            
-        #We place a reference to the alocated thread memmory at a specific ofset based on the tid
-        if tid > max_thread_ids:
-            raise Exception("thread id ("+str(tid)+") to large , have only alocated enogh memmory for "+str(max_thread_ids)+" threads")
-        thred_id_mem_location = thread_storage_list_address + (tid * 8)
-        
-        print("thred_id_mem_location:", thred_id_mem_location)
-        list_entry = struct.pack("<Q", thread_storage_address)
-        
-        process.write(thred_id_mem_location, list_entry)
-        
-        linked_list_entr = thread_storage_address + area_for_xsave64 + area_for_function_table 
-        process.write(linked_list_entr, struct.pack("<Q", linked_list_entr))
-        
-        #setup tracing memory area
-        begining_of_trace_area = linked_list_entr+area_for_return_addr_linked_list
-        process.write(begining_of_trace_area, struct.pack("<Q", begining_of_trace_area+8))
-        
-        thread_storage_list_addresses[tid] = thread_storage_address
-    
-    process.close_handle()
-    
-    if len(threads_to_setup) != 0: # if we have threads that have not been given storage yet handle them first
-        setup_thread = threads_to_setup.pop()
-        return setup_thread_storage(event, tid = setup_thread)
-
-
-def dump_trace(event, tid = None):
-    if tid is None:
-        tid = event.get_tid()
-    process = event.get_process()
-    
-    if thread_storage_list_address is not None and tid in thread_storage_list_addresses:
-        thread_storage_address = thread_storage_list_addresses[tid]
-        begining_of_trace_area = thread_storage_address + area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list
-        end_of_trace_data = read_ptr(process, begining_of_trace_area)
-        trace_data_addr = begining_of_trace_area+8
-        trace_data_len = end_of_trace_data-trace_data_addr
-        if trace_data_len != 0:
-            if trace_data_len < 0:
-                print("trace_data_len is smaler than 0 strange", trace_data_len)
-            else:
-                trace_data = process.read(trace_data_addr, trace_data_len)
-                
-                with open(out_file, "ab") as f:
-                    f.write(trace_data)
-                
-                #reset trace db
-                process.write(begining_of_trace_area, struct.pack("<Q", trace_data_addr))
-# -----------------------------
-# Trace printing callbacks
-# -----------------------------
-
-def function_enter_break_point(function_id: str, instruction_address: int, event: Any) -> None:
-    thread = event.get_thread()
-    pc = thread.get_pc()
-    tid = event.get_tid()
-    process = event.get_process()
-    print("  " * len(call_stack) + "enter: " + function_id)
-
-
-def function_exit_break_point(function_id: str, instruction_address: int, event: Any) -> None:
-    thread = event.get_thread()
-    pc = thread.get_pc()
-    tid = event.get_tid()
-    process = event.get_process()
-    print("  " * (len(call_stack) + 1) + "exit: " + function_id)
-
-
-def function_call_break_point(parent_function_id: str, instruction_address: int, call_num: int, reg, reg2, reg2_mult, indirect, offset, event: Any) -> None:
-    thread = event.get_thread()
-    pc = thread.get_pc()
-    tid = event.get_tid()
-    process = event.get_process()
-
-    context = thread.get_context()
-
-    target_addr = get_targetaddr(reg, reg2, reg2_mult, indirect, offset, context, process)
-    target_function_id = get_function_id(target_addr)
-
-    call_stack.append("call " + target_function_id)
-    print("  " * len(call_stack) + "call: nr_" + str(call_num) + " target: " + target_function_id + " addr: " + str(target_addr) +" from " + parent_function_id)
-
-
-def function_called_break_point(parent_function_id: str, instruction_address: int, call_num: int, event: Any) -> None:
-    thread = event.get_thread()
-    pc = thread.get_pc()
-    tid = event.get_tid()
-    process = event.get_process()
-
-    if len(call_stack) != 0:
-        _called_function_id = call_stack.pop()
-    else:
-        print("ISSUEE: ", "got exit without enter")
-    print("  " * (len(call_stack) + 1) + "called: nr_" + str(call_num) + "  from " + parent_function_id)
-
 
 # -----------------------------
 # Address / PE helpers
@@ -2434,17 +1753,7 @@ def asm2regaddr(code: Tuple[int, int, str, str]):
 
     return reg, reg2, reg2_mult, indirect, offset
 
-def deal_with_injection_callback(callback: Callable[[Any], None], save_place: int, event: Any) -> None:
-    global is_in_injected_code
-    del external_breakpoints[save_place]
-    callback(event)
-    is_in_injected_code = False
 
-def deal_with_injection_callback_debug(callback: Callable[[Any], None], save_place: int, event: Any) -> None:
-    global is_in_injected_code
-    del external_breakpoints[save_place]
-    after_running(event)
-    callback(event)
         
 
 def strip_semicolon_comments(asm: str) -> str:
@@ -2496,65 +1805,6 @@ def generate_clean_asm_func_call(code, in_two_parts = False, extra_push = 0, sav
         return assembly1, assembly2
     return assembly1 + assembly2
 
-def inject_assembly(process: Any, code_list: list, return_address: int) -> int:
-    """Inject assembly that saves/restores full register state, executes `code`, then returns.
-
-    The injected block ends with an int3 so we can flip the is_in_injected_code flag.
-    
-    """
-    
-    dbg = True
-    
-    if code_injection_address is None:
-        raise RuntimeError("Injection region not allocated.")
-
-    save_place = code_injection_address
-    assembly1, assembly2 = generate_clean_asm_func_call("", in_two_parts = True )
-    
-        
-    shellcode1 = asm(assembly1, save_place)
-    #print("asm1", assembly1, process.disassemble_string(save_place, shellcode1), shellcode1)
-    
-    save_place += len(shellcode1)
-    for code, code_done_callback in code_list:
-        if dbg:
-            code = "\nint3\n"+code
-            external_breakpoints[save_place+1] = partial(before_running, save_place+1)
-        code_bytes = asm(code+"\nint3", save_place)
-        
-        shellcode1 += code_bytes
-        save_place += len(code_bytes)
-        if code_done_callback is not None:
-            if dbg:
-                external_breakpoints[save_place] = partial(deal_with_injection_callback_debug, code_done_callback, save_place)
-            else:
-                external_breakpoints[save_place] = partial(deal_with_injection_callback, code_done_callback, save_place)
-                
-            
-    
-    if dbg:
-        assembly2 += """
-        int3
-        nop
-        jmp [RIP]
-        """
-    else:
-        assembly2 += """
-        jmp [RIP]
-        """
-    shellcode2 = asm(assembly2, save_place)
-    #print("asm2", assembly2, process.disassemble_string(save_place, shellcode2), shellcode2)
-    if dbg:
-        external_breakpoints[save_place+len(shellcode2)-7] = partial(ran_finally, save_place+len(shellcode2)-7)
-    
-    shellcode2 += struct.pack("<Q", return_address)
-
-    shellcode = shellcode1 + shellcode2
-    
-    process.write(code_injection_address, shellcode)
-    return code_injection_address
-
-
 # -----------------------------
 # DLL injection helpers
 # -----------------------------
@@ -2594,12 +1844,6 @@ def on_calltrace_dll_ready(handle):
             else:
                 print("No export table found.")
         
-        
-        #submit_hook_function_list_for_injection()
-        
-        # Hook all functions listed in .pdata
-        #hook_functions(process, event, pid)
-        
     else:
         raise Exception("dll has no exports")
     setup_after_dll_loaded(handle)
@@ -2623,11 +1867,6 @@ def loaded_dll(dll_name: str, callback, event: Any) -> None:
     else:
         print("failed to load injected dll:", dll_name)
         sys.exit()
-
-
-def exe_entry(event: Any) -> None:
-    print("first instruction entered")
-    on_debug_event(event, reduce_address=True)
 
 
 def get_pdata(filen: str, base_addr: int, exe_basic_name: str) -> None:
