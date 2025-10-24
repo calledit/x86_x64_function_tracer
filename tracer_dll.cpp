@@ -446,19 +446,25 @@ static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
         return EXCEPTION_CONTINUE_EXECUTION;
     }
 	else if (rec->ExceptionCode == 0x406D1388) { // MS_VC_EXCEPTION - Not really an error; used by Visual Studio for thread naming.
-        return EXCEPTION_CONTINUE_EXECUTION;
+        return EXCEPTION_CONTINUE_SEARCH;
     }
 	else if (rec->ExceptionCode == 0xC0000005) { // EXCEPTION_ACCESS_VIOLATION - We are probably going to crash time to save traces
-		// Sometimes this exeption hits when we are replacing call instructions with breakpoints as we are not pauseing the threads
+		// Sometimes this exeption hits when we are replacing call instructions with breakpoints when we are not pauseing the threads
         // if that is the case it will be resoleved by the time this exeption exits so we can just ignore it
         print("EXCEPTION_ACCESS_VIOLATION: RIP: " + std::to_string(ctx->Rip) + " RSP: " + std::to_string(ctx->Rsp));
         dump_all_traces();
         bufer_2_file();
-        return EXCEPTION_CONTINUE_EXECUTION;
+		return EXCEPTION_CONTINUE_SEARCH;//mabye the is atry catch that will handle it
+    }
+    else if (rec->ExceptionCode == 0xC000001D) { // STATUS_ACCESS_VIOLATION - We are probably going to crash time to save traces
+        print("STATUS_ILLEGAL_INSTRUCTION: RIP: " + std::to_string(ctx->Rip) + " RSP: " + std::to_string(ctx->Rsp));
+        dump_all_traces();
+        bufer_2_file();
+        return EXCEPTION_CONTINUE_SEARCH;//mabye the is atry catch that will handle it
     }
     
     else {
-        print("got other exception"+ std::to_string(rec->ExceptionCode));
+        print("got other exception:"+ std::to_string(rec->ExceptionCode) + " RIP: " + std::to_string(ctx->Rip));
 		dump_all_traces(); // We are probably going to crash, try to save traces
         bufer_2_file();
     }

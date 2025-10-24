@@ -30,22 +30,32 @@ def get_guid(dll):
         print (e)
         return None
     return tmp.upper()
-
-def get_pdb_from_microsoft(file_name):
-    basename = os.path.basename(args.file)
+    
+def get_pdb_name(file_name):
+    basename = os.path.basename(file_name)
     basic_name, ext = os.path.splitext(basename)
     
-    pdb_file_name = basic_name + ".pdb"
+    return basic_name + ".pdb"
+
+def get_pdb_from_microsoft(file_name):
+    basename = os.path.basename(file_name)
+    basic_name, ext = os.path.splitext(basename)
+    
+    pdb_file_name = get_pdb_name(file_name)
     output_filename = "pdbs" + os.sep + pdb_file_name
     
     if not os.path.exists(output_filename):
-        pe_info = pefile.PE(name=args.file, fast_load=True)
+        pe_info = pefile.PE(name=file_name, fast_load=True)
         pe_info.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_DEBUG']])
         
         guid = get_guid(pe_info)
         url = MICROSOFT_SYMBOL_STORE +pdb_file_name +"/" + guid + "/" + pdb_file_name
-        print(url, guid)
-        urllib.request.urlretrieve(url, output_filename)
+        print("get pdb from microsoft:", url, guid)
+        try:
+            urllib.request.urlretrieve(url, output_filename)
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                open(output_filename, "w").close()
     
     return output_filename
 
