@@ -1,57 +1,86 @@
 # X64 call tracer
-X64 call tracer is a project that has the goal to trace all function calls in a executable.
-
-## Reason behind project
-For reverse engineering it would be useful to get the exact call trace of a binary
-Exactly what jumps where what sections of code calls what addresses and so on.
-
-This information would allow one to find where functions are located in the code. Even if you did not have debug symbols.
-Compilation optimisations might make this impossible in some cases. But in some cases it should work.
-
-There are various tools that promise this ability. None of them work except for simple binaries.
-
-## Dynamic instrumentation tools
-Due to the emense classic nr of instructions that need to be tracked implementing such feature with a classic debugger and breakpoints is to slow.
-The solution to this is a Dynamic instrumentation tool. These exist but are complex beasts.
-On linux you have callgrind a part of the valgrind project. Which should work in wine but does not for some reason. On windows you have DynamoRIO.
-
-There is also a tool called frida that allows you to inject javascript in to any x86 binary. But it is slow based on breakpoints and crashy.
-
-I have been unable to get callgrind to work in complex senarios partly due to how modern games tend to use launchers that verify the executable. You also have DynamoRIO a moster of a project just like callgrind. When you have intelPIN. 
-
-I would like to be able to attach after the process has spawned either by replacing a dll or simply by attaching a debugger to the process id. My hope is that only focusing on tracing function calls will make the project smaller.
+**X64 Call Tracer** is a tool for tracing function calls in x64 Windows executables.  
+Its goal is simple: capture *what* calls *what* (and optionally when functions return), even when debug symbols are missing — useful for reverse engineering, analyzing game engines, or understanding large unfamiliar binaries.
 
 
-## Current function
-[function_tracer.py](function_tracer.py)
+# Motivation
 
-1. Either spaws a new process or atatches with debuger.
-2. it injects a dll ( calltrace.dll ) that can be used for injecitng varoius new tasks in to specific functions.
-3. It looks at the .exe .pdata information to find all functions.
-4. It decompiles all functions injects a trace point at the begining of each fucntion and replaces all calls with jumps to trampolines that registers the call and then executes it, then registers that the call was finished.
-	it is posible to turn on a flag to enable a specially crafted trampoline that modifies the return address so the tools also captures when the function returns. This feature is not completly transparent so may cause some functions to not behave properly so is disabled by default.
+Knowing the exact call trace of a binary (which code paths call which addresses / functions) makes it far easier to locate functions and understand program structure without symbols.
+
+Compiler optimizations, aggressive inlining, self-modifying code, and dynamic code generation can break complete tracing — this is a practical tool, not a magic bullet.
+
+Existing tools (Callgrind/Valgrind, DynamoRIO, Intel PIN, Frida) can provide similar functionality, but are often heavyweight, fragile with protected launchers, or slow for complex binaries.  
+**X64 Call Tracer** focuses narrowly on *function-call tracing* to stay smaller and easier to attach to running processes.
+
+
+## Features (current)
+
+- **`function_tracer.py`** (main):
+  1. Spawns a new process **or** attaches to a running one (by PID or name).
+  2. Injects a helper DLL (`calltrace.dll`) into the target.  
+     The DLL handles trace buffering, memory allocation, and saving traces to disk.
+  3. Parses the executable’s `.pdata` section to discover functions.
+  4. Instruments functions:
+     - Injects a trace point at the beginning of each function.
+     - Replaces direct `call` sites with jumps to trampolines that record the call, invoke the original target, and record completion.
+     - Optional: a “return-address modification” mode that captures when functions return.  
+       ⚠️ This is **experimental** and may break some functions, so it’s **disabled by default**.
+  5. Once injection is complete, the Python process exits; the target process continues and writes traces to disk during execution.
+
+- **`parse_trace.py`**:
+  - Converts raw `.trace` files into a human-readable or analyzable format.
 
 ## Usage
 ```bash
 # Capture trace
-python function_tracer.py {name of exeutable to attach to or spawn}
+python function_tracer.py {name of exeutable to attach to or spawn or pid}
 
 # View trace
 python parse_trace.py --file output\{executable}.trace
 ```
-Injecting traces is never completly transparent so the exectuable may crach when entering certain functions funcions. For example functions that are selfmodifying or does other unusual behavior. To help with this senario there is the function_exclusions list witch allows you to specify functions that sould not be traced. To figure out what functions are problematic simply run the tool over and over adding the functions which crash to the list as you go.
 
-Tracing does add a speed penalty which can be problematic for functions that are called over and over in loops. By running the tool multiple times you can find these functions and exclude them to.
+## Limitations & Caveats
+
+- **Not fully transparent** — instrumentation tries to be as transparent as posible but  
+  self-modifying code, JITs, or anti-tamper checks may detect or break under it.
+- **Performance penalty** — tracing every call is expensive.  
+  Use exclusions to remove hot functions or utility calls.
+- **Incomplete coverage** — inlining, tail calls, or dynamic code can escape detection.
+- **Launchers / anti-cheat** — some executables verify integrity and may reject injection.
+- **Platform** — designed for **x64 Windows**
+
+
+## Reliability Tips
+
+1. Start with a simple short trace to verify setup.
+2. Run, reproduce behavior, inspect the generated trace.
+3. If the target crashes after instrumentation:
+   - Add crashing functions to `function_exclusions`.
+   - Re-run and iterate.
+4. Exclude hot-loop functions to reduce slowdown.
+5. Keep return-address mode disabled unless you need exact returns.
+
+## Configuration
+
+- **`function_exclusions`** — a list of functions (addresses/names) that should *not* be traced.  
+  Useful for avoiding crashes or excessive slowdown.
+
+- **Trace output** — binary `.trace` files written to `output/`.  
+  Parse them using `parse_trace.py` for inspection or graph generation.
+
 
 ## Next steps
 - Add feature to create a map of all calls.
 - Build tool that analyses a captured trace and builds a call graph.
 - Build tool that uses the call graph to supplement the call map with info about dynamic calls.
-- Remove debugger
 
-## Current issues
-Modern games have anti debug features that kill the game as soon as you attach a debugger.
-calltrace was originally built on features made avalible throgh a debugger so it still attaches with a debugger.
-The debuggger only does a few small things that should be fairly easy to reimplement without a debugger.
-Main things are that the debugger keeps track of breakpoints used for jumps and signalling to python code. It lists loaded modules and it sets up thread local storage for tracing in asm.
-All those things can be replaced with other methods that does not relly on debugging.
+## Acknowledgements
+
+Inspired by dynamic instrumentation frameworks such as:
+- **Valgrind / Callgrind**
+- **DynamoRIO**
+- **Intel PIN**
+- **Frida**
+
+Each has its strengths and trade-offs.  
+**X64 Call Tracer** narrows the problem space to stay lightweight and more flexible for attaching to arbitrary processes.
