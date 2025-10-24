@@ -852,6 +852,12 @@ def hook_calls(process_handle) -> None:
         if flags >= 4:
             doing_init = False
         
+        
+        
+        ##test dont track anythingthat contains try except as that has stack unwinding and that fails for some reason when we rewrite the code
+        if flags != 0:
+            function_exclusions.append(pdata_ordinal)
+        
         function_map = {
             "ordinal": pdata_ordinal,
             "function_id":function_id,
@@ -1010,7 +1016,6 @@ def add_instruction_redirect(
         print("we are inserting a call init capturer")
         # Tracking assembly: adds a breakpoint before and after the real function.
         # Saves the return address, modifies it to point to the post-call int3, then jumps.
-        int3_bef = ""
 
         
         
@@ -1117,7 +1122,6 @@ mov     [r10], r11
         
         
         function_caller_asm = [
-            int3_bef, # triger interupt for python tracing enter of function
             "push rax;" if redirect_return else "", # save value in rax
             "mov rax, [RIP + 20];" if redirect_return else "", # fill rax with addres leading to new_function_return_address
             "mov [RSP+8], rax;" if redirect_return else "", # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
@@ -1312,15 +1316,12 @@ mov     [r15-100], rax
                 new_instruction_address += len(dbg_call_code)
             
             save_target_asm = (
-                "lea rsp, [rsp-8]\n" #make space on the stack where we will place the target address
-                f"push {reg_to_use} \n" #Save r9
-                "lea rsp, [rsp+16]\n"
+                f"mov [rsp-128], {reg_to_use} \n" #Save r9
                 f"{target_resolver}\n" #fill r9 with target address # {target_resolver}
                 f"mov [rsp-8], {reg_to_use}\n" #save r9 in the space we made on the stack
-                "lea rsp, [rsp-16]\n"
-                f"pop {reg_to_use}\n" #restore r9
-                "\nlea rsp, [rsp+8]\n"
+                f"mov {reg_to_use}, [rsp-128]\n" #restore r9
             )
+            
             
             #call_asm = (
             #    f"movabs     rcx, {function_ordinal};"    # first argument function_address
@@ -1350,7 +1351,7 @@ or      rax, rdx      ; RAX = (EDX<<32) | EAX
 mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
 
 mov     dword ptr [r8 + 17], """+str(call_num)+""" ;save call num (4 bytes)
-mov     rax, [r15] ;  arg target address # original rsp in rax, saved in r15 by save_target_asm
+mov     rax, [r15-8] ;  arg target address # original rsp in rax, saved in r15 by save_target_asm
 mov     qword ptr [r8 + 21], rax ;save raget_address (8 bytes)
 lea     r8, [r8+29]
 mov [r10], r8
