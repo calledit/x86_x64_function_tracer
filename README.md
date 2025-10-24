@@ -33,10 +33,15 @@ Existing tools (Callgrind/Valgrind, DynamoRIO, Intel PIN, Frida) can provide sim
 ## Usage
 ```bash
 # Capture trace
-python function_tracer.py {name of exeutable to attach to or spawn or pid}
+python function_tracer.py {name of exeutable to attach to or spawn, or pid}
 
 # View trace
-python parse_trace.py --file output\{executable}.trace
+python parse_trace.py --file output\{executable}.trace --modules "output\{executable}_modules.json" --map "output\{executable}_map.json
+```
+
+## Requirements
+```bash
+pip install pefile keystone-engine capstone>=6.0.0a4 pdbparse
 ```
 
 ## Limitations & Caveats
@@ -48,6 +53,7 @@ python parse_trace.py --file output\{executable}.trace
 - **Incomplete coverage** — inlining, tail calls, or dynamic code can escape detection.
 - **Launchers / anti-cheat** — some executables verify integrity and may reject injection.
 - **Platform** — designed for **x64 Windows**
+- **Data in code section** - some libraries put data in the .code section, this may lead to data beeing interpreted as code.
 
 
 ## Reliability Tips
@@ -55,6 +61,7 @@ python parse_trace.py --file output\{executable}.trace
 1. Start with a simple short trace to verify setup.
 2. Run, reproduce behavior, inspect the generated trace.
 3. If the target crashes after instrumentation:
+   - Look at c:\dbg\debug_output.txt and other output files for exception info to find the issue.
    - Add crashing functions to `function_exclusions`.
    - Re-run and iterate.
 4. Exclude hot-loop functions to reduce slowdown.

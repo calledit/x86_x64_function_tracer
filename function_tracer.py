@@ -21,10 +21,10 @@ Functionality is intentionally preserved from the original version; this revisio
 - Spelling fixes in identifiers, strings, and comments
 
 Requirements:
-    pip install git+https://github.com/MarioVilas/winappdbg.git
     pip install pefile
     pip install keystone-engine
     pip install capstone==6.0.0a4
+    pip install pdbparse
 
 Note: Run on Windows.
 
@@ -32,9 +32,6 @@ Note: Run on Windows.
 """
 # function_tracer.py notepad++.exe | "C:\Program Files\Git\usr\bin\tee.exe" test.txt
 
-from winappdbg import win32
-from winappdbg.debug import System
-from winappdbg.debug import Debug
 import sys
 import ctypes
 import ctypes.wintypes as wintypes
