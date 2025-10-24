@@ -14,16 +14,12 @@
 extern "C" {
     __declspec(dllexport) void print_to_file(const char* str);
     __declspec(dllexport) void print_text();
-    __declspec(dllexport) uint64_t function_enter_trace_point(uint64_t function_address, uint64_t return_address_pointer, uint64_t return_address);
-    __declspec(dllexport) uint64_t function_exit_trace_point(uint64_t function_address);
-    __declspec(dllexport) uint64_t function_call_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address, uint64_t target_address);
-    __declspec(dllexport) uint64_t function_called_trace_point(uint64_t function_address, uint64_t call_address, uint64_t return_address);
     __declspec(dllexport) uint64_t alloc_thread_storage(uint64_t out_address);
     __declspec(dllexport) uint64_t set_area_for_function_table(uint64_t size);
     __declspec(dllexport) uint64_t dump_trace(uint64_t thread_storage_address);
     __declspec(dllexport) uint64_t dump_all_traces();
     __declspec(dllexport) uint64_t set_output_file(char* file_path);
-    __declspec(dllexport) uint64_t add_jump_breakpoint(void* addr, void* target);
+    __declspec(dllexport) uint64_t add_jump_breakpoint(uint64_t addr, uint64_t target);
 }
 
 uint64_t area_for_xsave64 = 12228;
@@ -80,10 +76,10 @@ static std::shared_mutex jump_rwlock;
 static PVOID gVehHandle = nullptr;
 
 
-uint64_t add_jump_breakpoint(void* addr, void* target)
+uint64_t add_jump_breakpoint(uint64_t addr, uint64_t target)
 {
 
-    std::unique_lock<std::shared_mutex> wlock(jump_rwlock); // exclusive
+    //std::unique_lock<std::shared_mutex> wlock(jump_rwlock); // exclusive
     jump_breakpoints[(uint64_t)addr] = (uint64_t)target;
     return 0;
 }
@@ -374,83 +370,6 @@ inline std::unordered_map<uint64_t, std::vector<uint64_t>>& GetTLSMap() {
     return *tls_ret_stacks_ptr;
 }
 
-uint64_t function_enter_trace_point(uint64_t function_num, uint64_t return_address_pointer, uint64_t return_address) {
-    // Safety: check pointer before dereferencing
-
-    auto& tls_ret_stacks = GetTLSMap();
-    tls_ret_stacks[function_num].push_back(return_address);
-
-    // Logging (unchanged format aside from content)
-    uint32_t thread_id = static_cast<uint32_t>(__readgsdword(0x48));
-    std::string thread_id_str = std::to_string(thread_id);
-    std::string function_num_str = std::to_string((uintptr_t)function_num);
-    std::string return_address_pointer_str = std::to_string((uintptr_t)return_address_pointer);
-    std::string return_address_str = std::to_string((uintptr_t)return_address);
-
-    std::string desc = std::string("enter: ") + thread_id_str + " " + function_num_str + " " + return_address_pointer_str + " " + return_address_str;
-    print(desc);
-
-    // Return 0 for now. If you want this function to return something useful to the caller,
-    // e.g., an index or the saved address, we can change this.
-    return 0;
-}
-
-uint64_t function_exit_trace_point(uint64_t function_num) {
-    uint64_t original_return = 0;
-    auto& tls_ret_stacks = GetTLSMap();
-
-    auto it = tls_ret_stacks.find(function_num);
-    if (it != tls_ret_stacks.end()) {
-        auto& vec = it->second;
-        if (!vec.empty()) {
-            original_return = vec.back();
-            vec.pop_back();
-            if (vec.empty()) {
-                // remove empty vector to avoid unbounded growth of the map
-                tls_ret_stacks.erase(it);
-            }
-        }
-    }
-
-    uint32_t thread_id = static_cast<uint32_t>(__readgsdword(0x48));
-    std::string thread_id_str = std::to_string(thread_id);
-    std::string function_num_str = std::to_string((uintptr_t)function_num);
-    std::string return_address_str = std::to_string((uintptr_t)original_return);
-
-    std::string desc = std::string("exit: ") + thread_id_str + " " + function_num_str + " " + return_address_str;
-    print(desc);
-
-    // Return the original return address so the caller can jump/restore to it.
-    return original_return;
-}
-
-uint64_t function_call_trace_point(uint64_t function_num, uint64_t call_address, uint64_t return_address, uint64_t target_address) {
-    uint32_t thread_id = static_cast<uint32_t>(__readgsdword(0x48));
-    std::string thread_id_str = std::to_string(thread_id);
-    std::string function_num_str = std::to_string((uintptr_t)function_num);
-    std::string call_address_str = std::to_string((uintptr_t)call_address);
-    std::string return_address_str = std::to_string((uintptr_t)return_address);
-    std::string target_address_str = std::to_string((uintptr_t)target_address);
-
-
-    std::string desc = std::string("call: ") + thread_id_str + " " + function_num_str + " " + call_address_str + " " + return_address_str + " " + target_address_str;
-    print(desc);
-    return 0;
-}
-
-uint64_t function_called_trace_point(uint64_t function_num, uint64_t call_address, uint64_t return_address) {
-    uint32_t thread_id = static_cast<uint32_t>(__readgsdword(0x48));
-    std::string thread_id_str = std::to_string(thread_id);
-    std::string function_num_str = std::to_string((uintptr_t)function_num);
-    std::string call_address_str = std::to_string((uintptr_t)call_address);
-    std::string return_address_str = std::to_string((uintptr_t)return_address);
-
-
-    std::string desc = std::string("called: ") + thread_id_str + " " + function_num_str + " " + call_address_str + " " + return_address_str;
-    print(desc);
-    return 0;
-}
-
 
 int export_stack_trace() {
 
@@ -474,12 +393,13 @@ static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
         uint64_t rip = ctx->Rip;
 
         
-
-        std::shared_lock<std::shared_mutex> lock(jump_rwlock);
-        auto it = jump_breakpoints.find(rip);
-        if (it != jump_breakpoints.end()) {
-            ctx->Rip = it->second;   // redirect
-            return EXCEPTION_CONTINUE_EXECUTION;
+        {
+            //std::shared_lock<std::shared_mutex> lock(jump_rwlock);
+            auto it = jump_breakpoints.find(rip);
+            if (it != jump_breakpoints.end()) {
+                ctx->Rip = it->second;   // redirect
+                return EXCEPTION_CONTINUE_EXECUTION;
+            }
         }
 
 		//this is a normal breakpoint not a jump breakpoint we set
@@ -525,8 +445,21 @@ static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
     else if (rec->ExceptionCode == 0x4001000A) { // STATUS_WAKE_SYSTEM_DEBUGGER_CONTINUE
         return EXCEPTION_CONTINUE_EXECUTION;
     }
+	else if (rec->ExceptionCode == 0x406D1388) { // MS_VC_EXCEPTION - Not really an error; used by Visual Studio for thread naming.
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+	else if (rec->ExceptionCode == 0xC0000005) { // EXCEPTION_ACCESS_VIOLATION - We are probably going to crash time to save traces
+		// Sometimes this exeption hits when we are replacing call instructions with breakpoints as we are not pauseing the threads
+        // if that is the case it will be resoleved by the time this exeption exits so we can just ignore it
+        print("EXCEPTION_ACCESS_VIOLATION: RIP: " + std::to_string(ctx->Rip) + " RSP: " + std::to_string(ctx->Rsp));
+        dump_all_traces();
+        bufer_2_file();
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    
     else {
         print("got other exception"+ std::to_string(rec->ExceptionCode));
+		dump_all_traces(); // We are probably going to crash, try to save traces
         bufer_2_file();
     }
 

@@ -99,6 +99,10 @@ VirtualQueryEx.restype  = ctypes.c_size_t
 VirtualProtectEx.argtypes = [wintypes.HANDLE, wintypes.LPVOID, ctypes.c_size_t, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
 VirtualProtectEx.restype  = wintypes.BOOL
 
+ntdll = ctypes.WinDLL("ntdll")
+NtSuspendProcess = ntdll.NtSuspendProcess
+NtResumeProcess  = ntdll.NtResumeProcess
+
 
 MEM_COMMIT = 0x1000
 MEM_RESERVE = 0x2000
@@ -339,7 +343,7 @@ def load_library_in_remote(hProc, dll_path: str, wait: bool = True):
         remote_loadlib = int(remote_k32_base) + int(local_rva)
 
         # create thread to call LoadLibraryA(remote_str)
-        hThread = CreateRemoteThread(hProc, None, 0, remote_loadlib, remote_str, 0, None)
+        hThread = CreateRemoteThread(hProc, 0, 0, remote_loadlib, remote_str, 0, None)
         if not hThread:
             raise OSError(f"CreateRemoteThread(LoadLibraryA) failed: {ctypes.get_last_error()}")
 
@@ -365,10 +369,11 @@ def _query_mbi(hProcess, addr):
     mbi = MEMORY_BASIC_INFORMATION()
     res = VirtualQueryEx(hProcess, ctypes.c_void_p(addr), ctypes.byref(mbi), ctypes.sizeof(mbi))
     if res == 0:
+        print("adress: ", addr)
         raise ctypes.WinError(ctypes.get_last_error())
     return mbi
 
-def write(hProcess, lpBaseAddress: int, lpBuffer: bytes) -> int:
+def write(hProcess, lpBaseAddress: int, lpBuffer: bytes, do_checks = True) -> int:
     """
     Writes to the memory of the process `hProcess` starting at `lpBaseAddress`.
     Temporarily adjusts page protections if needed.
@@ -381,59 +386,62 @@ def write(hProcess, lpBaseAddress: int, lpBuffer: bytes) -> int:
     """
     if not lpBuffer:
         return 0
-
-    # Query memory info for the target address
-    mbi = _query_mbi(hProcess, lpBaseAddress)
-
-    # Check that this region has content (committed)
-    if not (mbi.State & MEM_COMMIT):
-        # mirror original behavior: consider invalid address
-        raise ctypes.WinError(ERROR_INVALID_ADDRESS)
-
-    # Decide whether we need to change protection to allow writing
-    need_protect = False
-    new_prot = None
-
-    # If image or mapped, use WRITE_COPY semantics
-    if mbi.Type == MEM_IMAGE or mbi.Type == MEM_MAPPED:
-        new_prot = PAGE_WRITECOPY
-        need_protect = True
-    else:
-        # if existing protection is writable, we don't need to change
-        prot = mbi.Protect
-        # prot flags that indicate writable include PAGE_READWRITE, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY
-        writable_flags = (PAGE_READWRITE, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY)
-        if prot in writable_flags:
-            need_protect = False
-            new_prot = None
-        else:
-            # if executable but not writable, escalate to RXW
-            # this mirrors the original: for executable pages, use PAGE_EXECUTE_READWRITE
-            exec_flags = (PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE)
-            if prot in exec_flags:
-                new_prot = PAGE_EXECUTE_READWRITE
-            else:
-                # default fallback: PAGE_READWRITE
-                new_prot = PAGE_READWRITE
-            need_protect = True
-
+    
     bytes_total = len(lpBuffer)
     bytes_written_total = 0
     org_lpBaseAddress = lpBaseAddress
+    
+    if do_checks:
+        # Query memory info for the target address
+        mbi = _query_mbi(hProcess, lpBaseAddress)
 
-    old_prot_value = wintypes.DWORD(0)
-    protected = False
+        # Check that this region has content (committed)
+        if not (mbi.State & MEM_COMMIT):
+            # mirror original behavior: consider invalid address
+            raise ctypes.WinError(ERROR_INVALID_ADDRESS)
 
-    # Try to change protection if needed (best-effort)
-    if need_protect and new_prot is not None:
-        ok = VirtualProtectEx(hProcess, ctypes.c_void_p(org_lpBaseAddress), ctypes.c_size_t(bytes_total), new_prot, ctypes.byref(old_prot_value))
-        if not ok:
-            # best effort: if we fail, we proceed but warn via exception or just continue like original did
-            # We'll raise a warning-like exception? To keep parity with original, just proceed without protection change.
-            protected = False
+        # Decide whether we need to change protection to allow writing
+        need_protect = False
+        new_prot = None
+
+        # If image or mapped, use WRITE_COPY semantics
+        if mbi.Type == MEM_IMAGE or mbi.Type == MEM_MAPPED:
+            new_prot = PAGE_WRITECOPY
+            need_protect = True
         else:
-            protected = True
+            # if existing protection is writable, we don't need to change
+            prot = mbi.Protect
+            # prot flags that indicate writable include PAGE_READWRITE, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY
+            writable_flags = (PAGE_READWRITE, PAGE_EXECUTE_READWRITE, PAGE_WRITECOPY)
+            if prot in writable_flags:
+                need_protect = False
+                new_prot = None
+            else:
+                # if executable but not writable, escalate to RXW
+                # this mirrors the original: for executable pages, use PAGE_EXECUTE_READWRITE
+                exec_flags = (PAGE_EXECUTE_READ, PAGE_EXECUTE_READWRITE)
+                if prot in exec_flags:
+                    new_prot = PAGE_EXECUTE_READWRITE
+                else:
+                    # default fallback: PAGE_READWRITE
+                    new_prot = PAGE_READWRITE
+                need_protect = True
 
+
+        old_prot_value = wintypes.DWORD(0)
+        protected = False
+
+        # Try to change protection if needed (best-effort)
+        if need_protect and new_prot is not None:
+            ok = VirtualProtectEx(hProcess, ctypes.c_void_p(org_lpBaseAddress), ctypes.c_size_t(bytes_total), new_prot, ctypes.byref(old_prot_value))
+            if not ok:
+                # best effort: if we fail, we proceed but warn via exception or just continue like original did
+                # We'll raise a warning-like exception? To keep parity with original, just proceed without protection change.
+                protected = False
+            else:
+                protected = True
+    else:
+        protected = False
     try:
         # Write in a loop until complete or until WriteProcessMemory writes zero/fails
         mv = memoryview(lpBuffer)
@@ -521,7 +529,7 @@ def read(hProcess, lpBaseAddress: int, nSize: int) -> bytes:
     cur = addr
     while cur < end_addr:
         mbi = MEMORY_BASIC_INFORMATION()
-        res = VirtualQueryEx(hProcess, ctypes.c_void_p(cur), ctypes.byref(mbi), ctypes.sizeof(mbi))
+        res = VirtualQueryEx(hProcess, cur, ctypes.byref(mbi), ctypes.sizeof(mbi))
         if res == 0:
             # Could not query — treat as invalid address
             raise ctypes.WinError(ERROR_INVALID_ADDRESS)
@@ -550,7 +558,7 @@ def read(hProcess, lpBaseAddress: int, nSize: int) -> bytes:
         buf = (ctypes.c_ubyte * to_read)()
         read_here = ctypes.c_size_t(0)
         ok = ReadProcessMemory(hProcess,
-                               ctypes.c_void_p(cur),
+                               cur,
                                ctypes.byref(buf),
                                ctypes.c_size_t(to_read),
                                ctypes.byref(read_here))
@@ -630,21 +638,14 @@ def disasm(address, code):
             # The number of bytes to skip depends on the architecture.
             # On Intel processors we'll skip one byte, since we can't
             # really know the instruction length. On the rest of the
-            # architectures we always know the instruction length.
-            if arch in (win32.ARCH_I386, win32.ARCH_AMD64):
-                length = 1
-            else:
-                length = 4
+            length = 1
 
             skipped = code[offset : offset + length]
 
             # Build the "define constant" instruction.
             # On Intel processors it's "db".
             # On ARM processors it's "dcb".
-            if arch in (win32.ARCH_I386, win32.ARCH_AMD64):
-                mnemonic = "db "
-            else:
-                mnemonic = "dcb "
+            mnemonic = "db "
             b = []
             for item in skipped:
                 if chr(item).isalpha():

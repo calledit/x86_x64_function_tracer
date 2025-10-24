@@ -98,6 +98,7 @@ ref_instructions = {}
 ks = Ks(KS_ARCH_X86, KS_MODE_64)
 
 jump_breakpoints = []
+jump_writes = []
 
 
 #Thread Storage
@@ -145,8 +146,17 @@ function_exclusions = [
     8027, #NOTEPAD++
     5596, #NOTEPAD++
 
+    ##SLOW
+    2616,
+    158,
+    4725,
+    5196,
+    8977,
+    5471
 ]
 
+
+function_exclusions = []
 
 
 # -----------------------------
@@ -249,7 +259,7 @@ def allocate_close(process, address_close_to_code):
 
 def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> None:
     """Allocate remote memory regions and inject the helper DLL."""
-    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages
+    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, alocated_thread_storages
 
     # VirtualAllocEx signature configuration
     ctypes.windll.kernel32.VirtualAllocEx.argtypes = [
@@ -268,7 +278,7 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
     if not remote_memory:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
     
-    size = 0x10000000
+    size = 0x20000000
     shell_code_address = 0
     while shell_code_address == 0:
         # Allocate large RX region for shellcode near code
@@ -317,7 +327,7 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
     
     
 def setup_after_dll_loaded(process_handle):
-    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages
+    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages, debug_func_address
     
     
     
@@ -503,7 +513,181 @@ jmp [r15 - 136] ;Jump back to return address of save call
     save_state_address = shell_code_address
     save_state_code = asm(save_state_asm, save_state_address)
     shell_code_address += len(save_state_code)
-    hook_lib.write(process_handle, save_state_address, save_state_code)
+    hook_lib.write(process_handle, save_state_address, save_state_code, do_checks = False)
+    
+    
+    
+    
+    
+    debug_save_state_asm = strip_semicolon_comments("""
+
+; ===== prologue: preserve flags & callee-saved registers =====
+pushfq
+sub   rsp, 8
+
+; save callee-saved GPRs that we will use or clobber
+push r15
+mov r15, rsp
+add r15, 160; save original return_address stack location in r15 fix ofset 24 caused by earlier pushes and 128 from before call and 8 from the call
+
+push rbp
+push rsi
+push rdi
+push rax
+push rcx
+push rdx
+push r8
+push r9
+push r10    
+push r11
+push r12
+push r13
+push r14
+push rbx
+
+
+
+; Find thread storage from list
+
+.find_current_thread_location:
+xor rdi,rdi
+xor r11,r11
+; load current thread id (low 32 bits of GS:[0x48])
+xor rax,rax
+mov     eax, dword ptr gs:[0x48]    ; EAX = current TID
+xor r12,r12
+lea r12, [rax*8] ; fix offset
+; base pointer to the array
+movabs  rsi, """+str(thread_storage_list_address)+"""           ; RSI = array base
+add r12, rsi
+mov rax, [r12]
+test rax, rax
+jnz .thread_memmory_is_alocated  ; jump if not zero (ZF = 0)
+
+    ; not alocated - get allocation
+
+
+    movabs rsi, """+str(alocated_thread_storages)+"""
+    mov rcx, """+str(nr_of_prepared_alocations)+"""
+    ; rsi = base, rcx = count
+    ; clobbers: rdi, rax
+    ; returns:  rdi = addres of value, rax = popped value (0 if none), ZF=1 if none
+
+        mov     rdi, rsi              ; cursor = base
+    .scan:
+        test    rcx, rcx
+        jz      .not_found
+
+        xor     eax, eax              ; rax := 0 to swap into the slot
+        xchg    rax, [rdi]            ; atomically: rax <- slot, slot <- 0
+        test    rax, rax
+        jnz     .found                ; got a non-zero, done
+
+        add     rdi, 8                ; next qword
+        dec     rcx
+        jmp     .scan
+
+
+    .not_found:
+        int3 ; can never be allowed to happen
+        xor     eax, eax
+
+    .found:
+        mov [r12], rax ; save new vale
+        mov     r11, 1 ;set R11 so we store the extended registers we only do it if we need to as it is slow
+        ;RDI is already set so alloc_thread_storage(uint64_t out_address) will be called further down
+
+
+
+.thread_memmory_is_alocated:
+mov r12, [r12]
+
+;Check if trace memmory starts be become to big
+xor r9, r9
+mov r10, r12
+add r10, """+str(area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list)+"""; get memory area for tracing
+
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
+
+add r10 , """+str(area_for_tracing_results-1000)+"""
+cmp r10, r8
+ja  .size_ok 
+    mov     r9, r12 ; We set r9 indicating that we need to empty the memory
+    mov     r11, 1 ;set R11 so we store the extended registers we only do it if we need to as it is slow
+.size_ok:
+
+
+;IF r11 is not zero we need to save the extended state so we can call calling alloc_thread_storage
+test    r11, r11
+jz .skip_saving_extended_state
+    ; set mask: XCR0 -> EDX:EAX, ECX must be 0
+    xor  ecx, ecx
+    xgetbv
+
+    ; save extended state; DO NOT use rdx as the memory base (EDX is mask upper)
+    xsave64 [r12]            ; (use xsaveopt if you detect support)
+    xor  ecx, ecx
+
+.skip_saving_extended_state:
+
+
+; ===== prepare for making the actual code =====
+; We must ensure RSP is 16-byte aligned at the CALL instruction and have 32 bytes shadow.
+
+; Compute the adjustment needed to align RSP to 16 bytes:
+; r10 currently saved on stack; we'll use r10 as temp for alignment value
+mov  rax, rsp
+and  rax, 15          ; rax = rsp % 16
+xor  r10, r10         ; r10 = 0 (will store correction amount if any)
+test rax, rax
+je   .no_align_needed
+    mov  r10, 16
+    sub  r10, rax         ; r10 = (16 - (rsp & 15))
+    sub  rsp, r10         ; adjust stack to align to 16
+.no_align_needed:
+push r10
+push r15
+push r11
+push r12
+
+; Now allocate the 32-byte shadow space required by Windows x64 ABI
+sub  rsp, 32
+
+test    RDI, RDI
+jz .skip_alloc_thread_storage
+
+    ;Alocate new thread storage rcx is alrady filled from 
+
+    mov rcx, rdi ;set first arg
+    movabs rax, """+str(call_tracer_dll_func['alloc_thread_storage'])+"""
+    call rax
+
+    ;Restore r15
+    mov r15, [rsp+48]
+
+.skip_alloc_thread_storage:
+
+test    R9, R9
+jz .skip_dump_trace
+
+    ;dump saved traces
+
+    mov rcx, r9 ;set first arg
+    movabs rax, """+str(call_tracer_dll_func['dump_trace'])+"""
+    call rax
+
+    ;Restore r15
+    mov r15, [rsp+48]
+
+.skip_dump_trace:
+
+jmp [r15 - 136] ;Jump back to return address of save call
+    """)
+    
+    debug_func_address = shell_code_address
+    debug_save_state_code = asm(debug_save_state_asm, debug_func_address)
+    shell_code_address += len(debug_save_state_code)
+    hook_lib.write(process_handle, debug_func_address, debug_save_state_code, do_checks = False)
     
     
     #restore state function
@@ -566,7 +750,7 @@ jmp [rsp - 136] ;jump to restore return address
     restore_state_address = shell_code_address
     restore_state_code = asm(restore_state_asm, restore_state_address)
     shell_code_address += len(restore_state_code)
-    hook_lib.write(process_handle, restore_state_address, restore_state_code)
+    hook_lib.write(process_handle, restore_state_address, restore_state_code, do_checks = False)
 
     
     
@@ -578,7 +762,10 @@ jmp [rsp - 136] ;jump to restore return address
         hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + stor_id*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nret")
     
     print("hooking executable")
+    
+    
     hook_calls(process_handle)
+    
 
 
 
@@ -610,7 +797,7 @@ def hook_calls(process_handle) -> None:
                 disassembled_functions = json.load(f)
     
     print("disassemble and index instructions", len(pdata_functions))
-    for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
+    for function_start_addr, function_end_addr, flags, pdata_ordinal in pdata_functions:
         function_id = get_function_id(function_start_addr)
         func_len = function_end_addr - function_start_addr
         print("disassemble:", function_id, "len:", func_len)
@@ -619,11 +806,11 @@ def hook_calls(process_handle) -> None:
         if len(disassembled_functions) > pdata_ordinal:
             instructions = disassembled_functions[pdata_ordinal]
         else:
-            try:
-                instcode = hook_lib.read(process_handle, function_start_addr, func_len)
-                instructions = hook_lib.disasm(function_start_addr, instcode)
-            except:
-                instructions = [] #DEBUG shit for disasemble failures
+            #try:
+            instcode = hook_lib.read(process_handle, function_start_addr, func_len)
+            instructions = hook_lib.disasm(function_start_addr, instcode)
+            #except:
+            #    instructions = [] #DEBUG shit for disasemble failures
             
             disassembled_functions.append(instructions)
             save_cache = True
@@ -650,7 +837,7 @@ def hook_calls(process_handle) -> None:
     print("instrument functions:", len(pdata_functions))
     do_init_at = 100
     #process.suspend() #FIXME we should suspend but process.suspend has a tendency to crash wen handling threads that just closed
-    for function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal in pdata_functions:
+    for function_start_addr, function_end_addr, flags, pdata_ordinal in pdata_functions:
         function_id = get_function_id(function_start_addr)
         
         doing_init = True
@@ -661,11 +848,16 @@ def hook_calls(process_handle) -> None:
         if pdata_ordinal in enter_exclusions:
             doing_init = False
         
+        #We dont trace initiation of funclets as the entry in to them might not mean a call was made
+        if flags >= 4:
+            doing_init = False
+        
         function_map = {
             "ordinal": pdata_ordinal,
             "function_id":function_id,
             "function_start_addr": function_start_addr,
             "function_end_addr": function_end_addr,
+            "flags": flags,
             "calls": []
         }
         
@@ -676,7 +868,7 @@ def hook_calls(process_handle) -> None:
         call_map.append(function_map)
         
     #process.resume()
-    print("inserted calltracing")
+    print("inserted tracers nr of calls:", len(call_map))
     
     map_file = "output\\"+exe_basic_name+'_map.json'
     with open(map_file, "w") as f:
@@ -686,6 +878,12 @@ def hook_calls(process_handle) -> None:
     module_file = "output\\"+exe_basic_name+'_modules.json'
     with open(module_file, "w") as f:
             json.dump(loaded_modules, f, indent=2)
+    
+    #hook_lib.NtSuspendProcess(process_handle)
+    for insert_location, jmp_to_shellcode in jump_writes:
+        hook_lib.write(process_handle, insert_location, jmp_to_shellcode)
+    #hook_lib.NtResumeProcess(process_handle)
+    print("inserted calltracing")
     
     
 
@@ -804,6 +1002,7 @@ def add_instruction_redirect(
     if jump_breakpoint is not None:
         jump_breakpoints.append((jump_breakpoint, jump_to_address))
         hook_lib.inject_asm(process_handle, "sub rsp, 40\nmovabs     rcx, "+str(jump_breakpoint)+"\nmovabs     rdx, "+str(jump_to_address)+"\nmovabs rax, "+str(call_tracer_dll_func['add_jump_breakpoint'])+"\n\ncall rax\nadd rsp, 40\nret")
+
     
     print(jump_type,'org:', instructions_asm, "(", instructions_len, ") write:", asmm, "bytes:", len(jmp_to_shellcode), "at:", insert_location, "jump_to_address:", jump_to_address, "diff:", jump_distance)
 
@@ -846,11 +1045,6 @@ lea     r8, [r8+33]
 mov [r10], r8
 
 
-add r10 , """+str(area_for_tracing_results-1000)+"""
-cmp r10, r8    
-ja  .size_ok 
-int3 ; if value is begining to fill table do an intrupt and let python dump the trace
-.size_ok:
 
 """+("""
 
@@ -911,13 +1105,7 @@ mov     [r10], r11
         #lol = asm(enter_asm1, jump_table_address)
     
         enter_asm = enter_asm1
-        
-            #f"movabs rcx, {function_ordinal};"    # first argument 
-            #"mov     rdx, r15;"    # second argument, pointer to the return address saved in r15 by generate_clean_asm_func_call
-            #"mov     r8, [r15];"   # third argument, the actual return address
-            #f"movabs rax, {call_tracer_dll_func['function_enter_trace_point']};"
-            #"call    rax;"
-        
+
         
         enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm, save_full=False), jump_table_address)
         #enter_func_call_code = b"" #asm("int3", jump_table_address) #Test with no tracing
@@ -930,7 +1118,6 @@ mov     [r10], r11
         
         function_caller_asm = [
             int3_bef, # triger interupt for python tracing enter of function
-            #"int3;", # DEBUG program gets here
             "push rax;" if redirect_return else "", # save value in rax
             "mov rax, [RIP + 20];" if redirect_return else "", # fill rax with addres leading to new_function_return_address
             "mov [RSP+8], rax;" if redirect_return else "", # move the value in rax in to the stack (saving it as a return address), that way we return to the second interupt
@@ -942,8 +1129,8 @@ mov     [r10], r11
         function_caller = asm(function_caller_asm, jump_write_address)
         new_function_return_address = jump_write_address + len(function_caller)+16
         
-        exit_asm1 = strip_semicolon_comments("""
-        
+        if redirect_return:
+            exit_asm1 = strip_semicolon_comments("""
 add r12, """+str(area_for_xsave64)+"""
 
 ;Save tracing
@@ -967,13 +1154,6 @@ mov [r10], r8
 
 
 ;Load return address from linked list
-
-add r10 , """+str(area_for_tracing_results-1000)+"""
-cmp r10, r8   
-ja  .size_ok 
-int3 ; if value is begining to fill table do an intrupt and let python dump the trace
-.size_ok:
-
 
 
 add r12, """+str(function_ordinal*8)+"""
@@ -1013,25 +1193,24 @@ mov     [r15-100], rax
 
 
 
-    """)
+        """)
         
-        exit_asm = exit_asm1
-        #(
-        #    exit_asm1 #has to be first as i depend on r12
-            #f"movabs rcx, {function_ordinal};"    # first argument 
-            #f"movabs rax, {call_tracer_dll_func['function_exit_trace_point']};"
-            #"call    rax;"
+            exit_asm = exit_asm1
             
-            #"mov     [r15], rax;" #Restore the original return address that was given by function_exit_trace_point r15 is a pointer to the top of the stack ie what rsp was at the entry of the fuction
-        #)
-        exit_func_call_code = asm("lea rsp, [rsp-140];"+generate_clean_asm_func_call(exit_asm, extra_push=132, save_full=False), jump_table_address)#
+            exit_func_call_code = asm("lea rsp, [rsp-8];"+generate_clean_asm_func_call(exit_asm, save_full=False), new_function_return_address)#We have just returned from a call so t onot clober the old return address that was just popped we decrement rsp by 8 before 
+            final_jump_code = asm("lea rsp, [rsp+8];jmp [rsp-108]", new_function_return_address + len(exit_func_call_code))#Then we incremet by 8 after
+            
+            #exit_func_call_code = asm("lea rsp, [rsp-140];"+generate_clean_asm_func_call(exit_asm, extra_push=132, save_full=False), jump_table_address)#
+            #final_jump_code = asm("lea rsp, [rsp+140];jmp [rsp-108]", jump_table_address + len(exit_func_call_code))#"ret"
+        else:
+           exit_func_call_code = b""
+           final_jump_code = b""
         
-        final_jump_code = asm("lea rsp, [rsp+140];jmp [rsp-108]", jump_table_address + len(exit_func_call_code))#"ret"
         
         f_break = b""
             
-        new_function_start_address = jump_table_address + len(enter_func_call_code) + len(function_caller) + 16 + len(exit_func_call_code) + len(f_break) + len(final_jump_code)
-        jump_code = enter_func_call_code + function_caller + struct.pack("<Q", new_function_start_address) + struct.pack("<Q", new_function_return_address) + exit_func_call_code + f_break + final_jump_code
+        new_function_start_address = jump_table_address + len(enter_func_call_code) + len(function_caller) + 16 + len(exit_func_call_code) + len(final_jump_code)
+        jump_code = enter_func_call_code + function_caller + struct.pack("<Q", new_function_start_address) + struct.pack("<Q", new_function_return_address) + exit_func_call_code + final_jump_code
         
         final_breakpoint = len(jump_code)+jump_table_address - len(final_jump_code)
         
@@ -1133,13 +1312,14 @@ mov     [r15-100], rax
                 new_instruction_address += len(dbg_call_code)
             
             save_target_asm = (
-                "lea rsp, [rsp-8]\n" #make space on the stack where we will place the return address
+                "lea rsp, [rsp-8]\n" #make space on the stack where we will place the target address
                 f"push {reg_to_use} \n" #Save r9
                 "lea rsp, [rsp+16]\n"
                 f"{target_resolver}\n" #fill r9 with target address # {target_resolver}
                 f"mov [rsp-8], {reg_to_use}\n" #save r9 in the space we made on the stack
                 "lea rsp, [rsp-16]\n"
                 f"pop {reg_to_use}\n" #restore r9
+                "\nlea rsp, [rsp+8]\n"
             )
             
             #call_asm = (
@@ -1170,24 +1350,18 @@ or      rax, rdx      ; RAX = (EDX<<32) | EAX
 mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
 
 mov     dword ptr [r8 + 17], """+str(call_num)+""" ;save call num (4 bytes)
-mov     rax, [r15-8] ;  arg target address # original rsp in rax, saved in r15 by generate_clean_asm_func_call the next value in the stack is filled in by save_target_asm which is what we reference here
+mov     rax, [r15] ;  arg target address # original rsp in rax, saved in r15 by save_target_asm
 mov     qword ptr [r8 + 21], rax ;save raget_address (8 bytes)
 lea     r8, [r8+29]
 mov [r10], r8
 
 
-add r10 , """+str(area_for_tracing_results-1000)+"""
-cmp r10, r8
-ja  .size_ok 
-int3 ; if value is begining to fill table do an intrupt and let python dump the trace
-.size_ok:
             """)
             
             
             
             #asm(save_target_asm, new_instruction_address)
-            extra_pop = "\nlea rsp, [rsp+8]\n"
-            extra_push = 8
+            
             
             
             #extra_pop = ""
@@ -1198,7 +1372,7 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
             #print("target_asm", save_target_asm)
             #exit()
             
-            call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm, extra_push = extra_push, save_full=False) + extra_pop, new_instruction_address)
+            call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm, save_full=False), new_instruction_address)
             #call_func_call_code = b""
             #exit()
             
@@ -1395,12 +1569,6 @@ mov     dword ptr [r8 + 17], """+str(call_num)+""" ;save call num (4 bytes)
 lea     r8, [r8+21]
 mov [r10], r8
 
-
-add r10 , """+str(area_for_tracing_results-1000)+"""
-cmp r10, r8
-ja  .size_ok 
-int3 ; if value is begining to fill table do an intrupt and let python dump the trace
-.size_ok:
                 """)
                 
                 call_func_called_code = asm(generate_clean_asm_func_call(call_asm, save_full=False), new_instruction_address)
@@ -1425,8 +1593,9 @@ int3 ; if value is begining to fill table do an intrupt and let python dump the 
     shell_len = len(shellcode)
 
     shell_code_address_offset += shell_len + 20
-    hook_lib.write(process_handle, jump_to_address, shellcode)
-    hook_lib.write(process_handle, insert_location, jmp_to_shellcode)
+    hook_lib.write(process_handle, jump_to_address, shellcode, do_checks = False)
+    jump_writes.append((insert_location, jmp_to_shellcode))
+    
 
     return call_num
 
@@ -1789,7 +1958,7 @@ def strip_semicolon_comments(asm: str) -> str:
 
     return ''.join(out_lines)
     
-def generate_clean_asm_func_call(code, in_two_parts = False, extra_push = 0, save_full=True):
+def generate_clean_asm_func_call(code, in_two_parts = False, debug = False, save_full=True):
     global register_save_address, thread_storage_list_address
     
     if save_full:
@@ -1798,6 +1967,8 @@ def generate_clean_asm_func_call(code, in_two_parts = False, extra_push = 0, sav
     
     if not save_full:
         assembly1 = "\nlea rsp, [rsp-128]\ncall " + str(save_state_address) + "\n\n" + code.replace(";", "\n") +"\n"
+    if debug:
+        assembly1 = "\nlea rsp, [rsp-128]\ncall " + str(debug_func_address) + "\n\n" + code.replace(";", "\n") +"\n"
     
     if not save_full:
         assembly2 = "call " + str(restore_state_address) + "\n"
@@ -1869,32 +2040,29 @@ def loaded_dll(dll_name: str, callback, event: Any) -> None:
         sys.exit()
 
 
-def get_pdata(filen: str, base_addr: int, exe_basic_name: str) -> None:
+def get_pdata(file_name: str, base_addr: int, exe_basic_name: str) -> None:
     """Parse .pdata from file on disk and populate function ranges & IDs."""
     global pdata, pdata_functions, exe_entry_address, pdata_function_ids, area_for_function_table
 
-    pe = pefile.PE(filen)
-    exe_entry_address = pe.OPTIONAL_HEADER.AddressOfEntryPoint + base_addr
+    
     functions: List[Tuple[int, int, int, int]] = []
-    for section in pe.sections:
-        if b".pdata" in section.Name:
-            pdata_data = section.get_data()
-            pdata = pdata_data
-
-            # RUNTIME_FUNCTION entry: 12 bytes (Start, End, UnwindInfo), all RVAs
-            entry_size = 12
-            num_entries = len(pdata_data) // entry_size
-
-            for i in range(num_entries):
-                entry = pdata_data[i * entry_size : (i + 1) * entry_size]
-                start_addr, end_addr, unwind_info_addr = struct.unpack("<III", entry)
-                if start_addr == 0 and end_addr == 0 or  end_addr-start_addr < 0:
-                    break
-                functions.append((start_addr + base_addr, end_addr + base_addr, unwind_info_addr, i))
-                pdata_function_ids[start_addr + base_addr] = exe_basic_name + "_" + str(i)
-            break
+    
+    pe_info = pefile.PE(name=file_name, fast_load=True)#cant load from memmory as the important headers are not loaded into memmory
+    exe_entry_address = pe_info.OPTIONAL_HEADER.AddressOfEntryPoint + base_addr
+    
+    pe_info.parse_data_directories(directories=[pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXPORT'], pefile.DIRECTORY_ENTRY['IMAGE_DIRECTORY_ENTRY_EXCEPTION']])
+    
+    i = 0
+    for rf in pe_info.DIRECTORY_ENTRY_EXCEPTION:
+        #print(rf.struct.BeginAddress, rf.struct.EndAddress, rf.unwindinfo.Flags, rf.unwindinfo.SizeOfProlog, dir(rf.unwindinfo))
+        start_addr = rf.struct.BeginAddress + base_addr
+        end_addr = rf.struct.EndAddress + base_addr
+        functions.append((start_addr, end_addr, int(rf.unwindinfo.Flags), i))
+        pdata_function_ids[start_addr] = exe_basic_name + "_" + str(i)
+        i += 1
+    
     if area_for_function_table is None:
-        nr_of_functions = len(pdata)
+        nr_of_functions = len(functions)
         area_for_function_table = (nr_of_functions+1)*8#(we add  one just in case i dont remember if ordinal was zero or one indexed)
     pdata_functions = functions
 
