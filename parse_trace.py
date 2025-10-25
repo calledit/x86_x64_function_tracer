@@ -22,9 +22,23 @@ def get_mod_containing(address):
                 return mid
     return None
 
+def get_function_containing(address):
+    """
+    Return the (function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal)
+    tuple that contains the given address, or None if not found.
+    """
+    for entry in func_map:
+        function_start_addr, function_end_addr = entry['function_start_addr'], entry['function_end_addr']
+        if function_start_addr <= address < function_end_addr:
+            return entry
+    return None
+
 def get_name_of_function(address):
     if address in functions:
         return functions[address]['function_id']
+    in_func = get_function_containing(address)
+    if in_func is not None:
+        return "call to inside of: " + in_func['function_id']
     
     mod_name = get_mod_containing(address)
     if mod_name in module_lookup:
@@ -123,6 +137,7 @@ def print_traces(traces, stack_offset, contains_exits):
 
 modules = None
 module_lookup = {}
+func_map = []
 functions = {}
 ordinal2addr = {}
 

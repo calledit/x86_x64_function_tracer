@@ -116,14 +116,18 @@ spawned = False
 call_trace_dll_ready = False
 load_dll_tid = -1
 jumps = {}
+calls = {}
+classfied_extra_functions = []
 max_thread_ids = 30000
 
 os.makedirs('output', exist_ok=True)
 out_file = None
 
 call_map = []
+functions_end = {}
 
 exe_basic_name = None
+exe_name = None
 
 forbid_break_point_jumps = False
 
@@ -169,7 +173,7 @@ def start_or_attach(argv: List[str]) -> None:
     """Start or attach to the given executable.
 
     """
-    global spawned, exe_basic_name, out_file
+    global spawned, exe_basic_name, out_file, exe_name
     pid = None
     arg1 = sys.argv[1]
     
@@ -204,6 +208,7 @@ def start_or_attach(argv: List[str]) -> None:
     #hook_lib.print_modules(mods)
     
     exe_basic_name = get_base_name(executable_path)
+    exe_name = executable_path.split("\\")[-1]
     out_file = os.path.abspath('output'+os.sep+exe_basic_name+'.trace')
     if os.path.exists(out_file):
         os.remove(out_file)
@@ -765,6 +770,7 @@ jmp [rsp - {rsp_ofset+8}] ;jump to restore return address
     
     print("hooking executable")
     
+    analyse_executable_code(process_handle)
     
     hook_calls(process_handle)
     
@@ -782,15 +788,8 @@ def get_function_containing(address):
             return entry
     return None
     
-
-
-def hook_calls(process_handle) -> None:
-    """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
-    global disassembled_functions, function_map
-    # Cache to avoid repeated disassembly of large binaries
-    
-    
-    
+def analyse_executable_code(process_handle):
+    global disassembled_functions, function_map, functions_end, loaded_modules
     disassembled_cache_file = exe_basic_name + "_instructions_cache.json"
     save_cache = False
     if len(disassembled_functions) == 0:
@@ -798,8 +797,8 @@ def hook_calls(process_handle) -> None:
             with open(disassembled_cache_file, "r") as f:
                 disassembled_functions = json.load(f)
     
-    print("disassemble and index instructions", len(pdata_functions))
-    functions_end = {}
+    print("disassemble and analyse instructions", len(pdata_functions))
+    
     for function_start_addr, function_end_addr, flags, pdata_ordinal, prolog_size in pdata_functions:
         function_id = get_function_id(function_start_addr)
         func_len = function_end_addr - function_start_addr
@@ -831,6 +830,8 @@ def hook_calls(process_handle) -> None:
                 prolog.append(instruction)
                 
             is_db_inst = instruction_name == "db"
+            
+            is_call_inst = instruction_name == "call"
                 
             indirect_memory = instruction_name != "lea" and "[" in instruction_asm
             
@@ -854,24 +855,140 @@ def hook_calls(process_handle) -> None:
                     functions_end[function_start_addr] = instruction[0]
                     break
             
-            if is_jump:
+            if is_jump or is_call_inst:
                 reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruction)
-                jump_to = None
+                to_addr = None
                 if reg is None and reg2 is None:
-                    jump_to = offset
+                    to_addr = offset
                     if indirect:
-                        jump_to = read_ptr(process_handle, offset)
+                        to_addr = read_ptr(process_handle, offset)
                     
-                    if jump_to not in jumps:
-                        jumps[jump_to] = []
-                    jumps[jump_to].append(instruction)
-                else:
+                    if is_jump:
+                        if to_addr not in jumps:
+                            jumps[to_addr] = []
+                        jumps[to_addr].append(instruction)
+                    
+                    elif is_call_inst:
+                        if to_addr not in calls:
+                            calls[to_addr] = []
+                        calls[to_addr].append(instruction)
+                elif is_jump:
                     print("WARNING dynamic jump:", instruction)
-        #print(prolog)#might use prolog to find end of function at some point
+        
+    #find non listed_functions
+    resolved_calls = []
+    for address in calls:
+        if address not in pdata_function_ids:
+            resolved_calls.append(address)
+    
+    #reload modules incase any more has been loaded
+    loaded_modules = hook_lib.enumerate_modules(process_handle, base_name = True)
+    
+    
+    
+    for func_addr in resolved_calls:
+        classfied = None
+        trunc_end = None
+        mod_name, mod = get_module_from_address(func_addr)
+        if mod is not None:
+            
+            if mod_name == exe_name:
+                max_end = find_first_func(func_addr+1)
+                max_mod_end = mod['base'] + mod['size']
+                #exit()
+                if max_end is None:
+                    max_end = max_mod_end
+                
+                max_end = min(max_end, max_mod_end)
+                size = max_end - func_addr
+                print("posible size:", size)
+                instcode = hook_lib.read(process_handle, func_addr, min(size, 512))
+                instructions = hook_lib.disasm(func_addr, instcode)
+                print("non listed func:", func_addr, "len:", size)
+                if len(instructions) > 0 and False:
+                    first_instruciton = instructions[0]
+                    instruction_asm = first_instruciton[2]
+                    inst_name = instruction_asm.split(" ")[0]
+                    if inst_name == "ret" or inst_name == "jmp":
+                        classfied = "thunk"
+                        max_end = first_instruciton[0] + first_instruciton[1]
+                        ##this is probably a "thunk" function
+                
+                
+                
+                is_linear = True
+                if classfied is None:
+                    repeat_int3 = 0
+                    for inst in instructions:
+                        instruction_asm = inst[2]
+                        inst_name = instruction_asm.split(" ")[0]
+                        
+                        thunk_jump = False
+                        if inst_name == 'int3':
+                            classfied = "probable_func_int3_terminated"
+                            max_end = inst[0]
+                            repeat_int3 += 1
+                        else:
+                            if repeat_int3 > 1:
+                                break
+                            repeat_int3 = 0
+                        
+                        print(instruction_asm)
+                        is_unconditional_jump = inst_name == 'jmp'
+                        if is_linear and is_unconditional_jump:
+                            classfied = "thunk"
+                            max_end = inst[0] + inst[1]
+                            break
+                        is_jump = inst_name.startswith("j") or inst_name.startswith("loop")
+                        if is_jump:
+                            is_linear = False
+                        
+                            
+                        if (is_linear and (inst_name == 'ret' or inst_name == 'int3')):
+                            classfied = "mini_func"
+                            max_end = inst[0] + inst[1]
+                            break
+                        
+                        if inst_name == 'db':
+                            classfied = "probable_func_db_terminated"
+                            max_end = inst[0]
+                            trunc_end = max_end
+                            break
+                
+                #the disasembler stoped, this is only valid if we read the full posible size
+                #if classfied is None:
+                #    max_end = instructions[-1][0] + instructions[-1][0]
+                
+                if classfied is not None:
+                    size = max_end - func_addr
+                    classfied_extra_functions.append({
+                        "ordinal": None,
+                        "function_id": get_base_name(mod_name)+"_"+classfied,
+                        "function_start_addr": func_addr,
+                        "function_end_addr": max_end,
+                        "function_force_end_truncate": trunc_end,
+                        "unlisted": True,
+                        "flags": 0,
+                        "calls": []
+                    })
+                    print("classfied:", classfied, "size:", size)
+                print("\n")
+        else:
+            print("no module at addr:", func_addr)
+    #find_first_func
+    #print(prolog)#might use prolog to find end of function at some point
     
     if save_cache:
         with open(disassembled_cache_file, "w") as f:
             json.dump(disassembled_functions, f, indent=2)
+    
+
+def hook_calls(process_handle) -> None:
+    """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
+    global disassembled_functions, function_map, functions_end, loaded_modules
+    # Cache to avoid repeated disassembly of large binaries
+    
+    
     
     print("instrument functions:", len(pdata_functions))
     do_init_at = 100
@@ -905,6 +1022,7 @@ def hook_calls(process_handle) -> None:
             "function_start_addr": function_start_addr,
             "function_end_addr": function_end_addr,
             "function_force_end_truncate": end_addr,
+            "unlisted": False,
             "flags": flags,
             "calls": []
         }
@@ -919,6 +1037,12 @@ def hook_calls(process_handle) -> None:
             insert_break_at_calls(process_handle, instructions, function_id, function_start_addr, pdata_ordinal, doing_init, doing_calls)
         
         call_map.append(function_map)
+    
+    
+    for func_desc in classfied_extra_functions:
+        func_desc['ordinal'] = len(call_map)
+        func_desc['function_id'] += "_unlisted_" + str(func_desc['ordinal'])
+        call_map.append(func_desc)
         
     #process.resume()
     print("inserted tracers nr of calls:", len(call_map))
@@ -1682,9 +1806,41 @@ def find_jumps_to_address(address):
     """
     Return a list of all (offset, instruction) tuples where offset == address.
     """
+    ret = []
     if address in jumps:
-        return jumps[address]
-    return []
+        ret += jumps[address]
+        
+    if address in calls:
+        ret += calls[address]
+        
+    return ret
+
+def find_first_func(address):
+    """
+    Find the next address >= 'address' that is the start of a known function.
+    Checks:
+      - pdata_functions (function_start_addr)
+      - call targets
+      - jump targets
+    Returns the smallest such address, or None if none exist above the given address.
+    """
+    candidates = []
+
+    # Add all function start addresses
+    candidates.extend(f[0] for f in pdata_functions)
+
+    # Add all call and jump targets
+    candidates.extend(calls.keys())
+    candidates.extend(jumps.keys())
+
+    # Filter only addresses >= the given one
+    candidates = [a for a in candidates if a >= address]
+
+    if not candidates:
+        return None
+
+    return min(candidates)
+
 
 def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int, function_ordinal: int, do_init: bool, doing_calls: bool) -> None:
     """Insert breakpoints at every CALL within a function's instruction list."""
@@ -1843,24 +1999,22 @@ def get_function_id(function_addr: int) -> str:
     if function_addr in pdata_function_ids:
         return pdata_function_ids[function_addr]
 
-    mod = get_module_from_address(function_addr)
-    module_offset = function_addr - loaded_modules[mod]
-    func_id = str(mod) + "+" + str(module_offset)
+    mod_name, module = get_module_from_address(function_addr)
+    module_offset = function_addr - module['base']
+    func_id = str(mod_name) + "+" + str(module_offset)
     return func_id
 
 
 def get_module_from_address(address: int) -> Optional[str]:
     """Return module basename containing the given address by highest base <= address."""
-    found_module: Optional[str] = None
-    found_base = -1
 
-    for module, base in loaded_modules.items():
-        if base <= address and base > found_base:
-            found_module = module
-            found_base = base
 
-    return found_module
+    for mod in loaded_modules:
+        module = loaded_modules[mod]
+        if module['base'] <= address <= module['base'] + module['size']:
+            return mod, module
     
+    return None, None
     
 def get_targetaddr(reg, reg2, reg2_mult, indirect, offset, context, process):
     """use info to get CALL target given thread context."""
@@ -2109,23 +2263,6 @@ def on_calltrace_dll_ready(handle):
     
     
 
-def loaded_dll(dll_name: str, callback, event: Any) -> None:
-    thread = event.get_thread()
-    context = thread.get_context()
-    base_addr = context["Rax"]
-    if base_addr != 0:
-        print("Loaded injected dll:", dll_name)
-        basename = os.path.basename(dll_name)
-        basic_name, ext = os.path.splitext(basename)
-        loaded_modules[basic_name] = base_addr
-
-        callback(event)
-        #This code has ben moved to hte load dll event keeping it here for reference here for now 
-        #if basic_name == "calltracer" and len(call_tracer_dll_func) == 0:
-        #    
-    else:
-        print("failed to load injected dll:", dll_name)
-        sys.exit()
 
 
 def get_pdata(file_name: str, base_addr: int, exe_basic_name: str) -> None:
