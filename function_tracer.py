@@ -201,11 +201,23 @@ def start_or_attach(argv: List[str]) -> None:
             spawned = True
     
     
+    
     handle = hook_lib.get_handle(pid)
     
     executable_path = hook_lib.get_process_image_path(handle)
-    mods = hook_lib.enumerate_modules(handle, do_until_sucess = True)
-    #hook_lib.print_modules(mods)
+    mods = None
+    while True:
+        try:
+            mods = hook_lib.enumerate_modules(handle, do_until_sucess = True, base_name = True)
+            if "kernel32.dll" in mods:
+                break
+        except OSError as e:
+            print("enumerate_modules faield trying again")
+    
+    # if we just spawned the process we suspend it now that kernel32 is loaded to try to catch as much of the activity as posible
+    # some activity might still get lost as the way we probe for kernel32 is async but doing it syncronysly would be much more complicated
+    if spawned:
+        hook_lib.NtSuspendProcess(handle)
     
     exe_basic_name = get_base_name(executable_path)
     exe_name = executable_path.split("\\")[-1]
@@ -213,7 +225,7 @@ def start_or_attach(argv: List[str]) -> None:
     if os.path.exists(out_file):
         os.remove(out_file)
     
-    base_addr = mods[executable_path]['base']
+    base_addr = mods[exe_name]['base']
 
     
     get_pdata(executable_path, base_addr, exe_basic_name)
@@ -221,7 +233,9 @@ def start_or_attach(argv: List[str]) -> None:
     allocate_mem_and_inject_dll(handle, exe_entry_address)
     
     on_calltrace_dll_ready(handle)
-    #print(pdata_functions)
+    
+    if spawned:
+        hook_lib.NtResumeProcess(handle)
     
 
 
@@ -1078,10 +1092,12 @@ def hook_calls(process_handle) -> None:
     with open(module_file, "w") as f:
             json.dump(loaded_modules, f, indent=2)
     
-    hook_lib.NtSuspendProcess(process_handle)
+    if not spawned: #if it was spawned it is already suspended
+        hook_lib.NtSuspendProcess(process_handle)
     for insert_location, jmp_to_shellcode in jump_writes:
         hook_lib.write(process_handle, insert_location, jmp_to_shellcode)
-    hook_lib.NtResumeProcess(process_handle)
+    if not spawned:
+        hook_lib.NtResumeProcess(process_handle)
     print("inserted calltracing")
     
 
