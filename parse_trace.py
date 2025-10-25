@@ -35,7 +35,11 @@ def get_function_containing(address):
 
 def get_name_of_function(address):
     if address in functions:
-        return functions[address]['function_id']
+        func = functions[address]
+        if func['unlisted'] and len(func['thunk_jumps']) == 1:
+            thunk_jump = func['thunk_jumps'][0]
+            return func['function_id'] + f" continues to ({thunk_jump}) " + get_name_of_function(thunk_jump)
+        return func['function_id']
     in_func = get_function_containing(address)
     if in_func is not None:
         return "call to inside of: " + in_func['function_id']
@@ -50,12 +54,13 @@ def get_name_of_function(address):
             if ":\\windows\\" in mod['path'].lower():
                 download_pdb.get_pdb_from_microsoft(mod['path'])
             if os.path.exists(pdb_file) and os.path.getsize(pdb_file) != 0:
-                module_lookup[mod_name] = Lookup([module_lookup[mod_name]])
+                addrs_names = Lookup([module_lookup[mod_name]])
+                module_lookup[mod_name] = dict(next(iter(addrs_names.addrs.values()))['addrs'])
         
         if not isinstance(module_lookup[mod_name], tuple):
-            name = module_lookup[mod_name].lookup(trace.target_address)
-            if name != "unknown":
-                return mod_name + "!" + undecorate_nice(name)
+            mod_lookup = module_lookup[mod_name]
+            if address in mod_lookup:
+                return mod_name + "!" + undecorate_nice(mod_lookup[address])
     return "unknown function in: " + mod_name
 
 import ctypes
@@ -85,9 +90,9 @@ def undecorate_symbol(mangled_name, flags=0):
 
 def undecorate_nice(decorated, remove_arguments = True):
     
-    func_name = decorated.split("!", 1)
-    func_name_preample = func_name.pop(0)
-    func_name = func_name.pop(0)
+    func_name = decorated #decorated.split("!", 1)
+    #func_name_preample = func_name.pop(0)
+    #func_name = func_name.pop(0)
     #Sometimes there is a + with some extra garbage at the end that need to be removed
     func_name = func_name.split('+').pop(0)
     undeced = undecorate_symbol(func_name)

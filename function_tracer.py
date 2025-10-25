@@ -960,6 +960,27 @@ def analyse_executable_code(process_handle):
                 #    max_end = instructions[-1][0] + instructions[-1][0]
                 
                 if classfied is not None:
+                    
+                    thunk_jmps = []
+                    #We check the sure classifications for jumps
+                    if classfied == "thunk" or classfied == "mini_func":
+                        for inst in instructions:
+                            
+                            is_jump = inst[2].startswith("j")
+                            if is_jump:
+                                reg, reg2, reg2_mult, indirect, offset = asm2regaddr(inst)
+                                to_addr = None
+                                if reg is None and reg2 is None:
+                                    to_addr = offset
+                                    if indirect:
+                                        to_addr = read_ptr(process_handle, offset)
+                                    
+                                    thunk_jmps.append(to_addr)
+                                    
+                                    if to_addr not in jumps:
+                                        jumps[to_addr] = []
+                                    jumps[to_addr].append(instruction)
+                    
                     size = max_end - func_addr
                     classfied_extra_functions.append({
                         "ordinal": None,
@@ -968,6 +989,7 @@ def analyse_executable_code(process_handle):
                         "function_end_addr": max_end,
                         "function_force_end_truncate": trunc_end,
                         "unlisted": True,
+                        "thunk_jumps": thunk_jmps,
                         "flags": 0,
                         "calls": []
                     })
