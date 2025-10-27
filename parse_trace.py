@@ -45,6 +45,8 @@ def get_name_of_function(address):
         return "call to inside of: " + in_func['function_id']
     
     mod_name = get_mod_containing(address)
+    if mod_name is None:
+        return "unknown module"
     if mod_name in module_lookup:
         if isinstance(module_lookup[mod_name], tuple):
             
@@ -196,7 +198,8 @@ if __name__ == '__main__':
                 trace.return_address_pointer, trace.return_address = struct.unpack("<QQ", f.read(16))
                 
                 trace.type_str = "enter"
-                func_addr = ordinal2addr[function_ordinal]
+                if function_ordinal in ordinal2addr:
+                    func_addr = ordinal2addr[function_ordinal]
                 
 
             if trace.trace_type == 2:# type 2 is function exit

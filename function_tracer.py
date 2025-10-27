@@ -47,6 +47,17 @@ import traceback
 import random
 import hook_lib
 import locale
+import bisect
+import hashlib
+
+import re
+_strip_semicolon_comments = re.compile(r'[ \t]*;[^\r\n]*')
+
+
+import cProfile, pstats, io
+
+pr = cProfile.Profile()
+pr.enable()
 
 # -----------------------------
 # Globals / State
@@ -80,9 +91,11 @@ shell_code_address_offset: int = 20  # Start at 20 arbitrarily to keep some spac
 # PE / function metadata (.pdata)
 pdata: Optional[bytes] = None
 pdata_functions: List[Tuple[int, int, int, int]] = []
+pdata_index = None
 pdata_function_ids: Dict[int, str] = {}
 exe_entry_address: int = 0
-disassembled_functions: List[List[Tuple[int, int, str, str]]] = []
+disassembled_functions = {}
+asembly_cache = {}
 
 # Simple call stack for pretty printing
 call_stack: List[str] = []
@@ -117,6 +130,7 @@ call_trace_dll_ready = False
 load_dll_tid = -1
 jumps = {}
 calls = {}
+trace_all_calls = True
 classfied_extra_functions = []
 max_thread_ids = 30000
 
@@ -173,7 +187,7 @@ def start_or_attach(argv: List[str]) -> None:
     """Start or attach to the given executable.
 
     """
-    global spawned, exe_basic_name, out_file, exe_name
+    global spawned, exe_basic_name, out_file, exe_name, asembly_cache
     pid = None
     arg1 = sys.argv[1]
     
@@ -219,14 +233,23 @@ def start_or_attach(argv: List[str]) -> None:
     if spawned:
         hook_lib.NtSuspendProcess(handle)
     
+    
+    
     exe_basic_name = get_base_name(executable_path)
-    exe_name = executable_path.split("\\")[-1]
+    exe_name = executable_path.split("\\")[-1].lower()
     out_file = os.path.abspath('output'+os.sep+exe_basic_name+'.trace')
     if os.path.exists(out_file):
         os.remove(out_file)
     
     base_addr = mods[exe_name]['base']
 
+    assembled_cache_file = exe_basic_name + "_asembly_cache.json"
+    
+    if os.path.exists(assembled_cache_file) and time.time() - os.path.getmtime(assembled_cache_file) < 12 * 3600:
+        with open(assembled_cache_file, "r") as f:
+            asembly_cache = json.load(f)
+            for key in asembly_cache:
+                asembly_cache[key] = bytes.fromhex(asembly_cache[key])
     
     get_pdata(executable_path, base_addr, exe_basic_name)
     
@@ -237,6 +260,16 @@ def start_or_attach(argv: List[str]) -> None:
     if spawned:
         hook_lib.NtResumeProcess(handle)
     
+    with open(assembled_cache_file, "w") as f:
+        for key in asembly_cache:
+            asembly_cache[key] = asembly_cache[key].hex()
+        json.dump(asembly_cache, f, indent=2)
+    
+    s = io.StringIO()
+    ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
+    ps.print_stats(30)
+    print(s.getvalue())
+    
 
 
 def get_base_name(filename: str) -> str:
@@ -246,8 +279,22 @@ def get_base_name(filename: str) -> str:
     return basic_name
 
 
+
+def make_asm_key(code: str, address: int) -> str:
+    """asembling is slow so we cache the results"""
+    h = hashlib.blake2b(digest_size=8)
+    h.update(code.encode('utf-8'))
+    h.update(address.to_bytes(8, 'little'))
+    return str(h.hexdigest())
+
 def asm(CODE: str, address: int = 0) -> bytes:
     """Assemble x64 code at the given address using Keystone."""
+    
+    ##due to the fact that we alocate allot of code dynamicly allot of asm gets lots of cache miseses
+    asm_hash = make_asm_key(CODE, address)
+    if asm_hash in asembly_cache:
+        return asembly_cache[asm_hash]
+        
     try:
         encoding, count = ks.asm(CODE, address)
     except KsError as e:
@@ -256,7 +303,9 @@ def asm(CODE: str, address: int = 0) -> bytes:
         print(f"Keystone error: {e} (errno={getattr(e, 'errno', None)}, " f"count={getattr(e, 'count', None)})")
         traceback.print_stack()
         exit()
-    return bytes(encoding)
+    byts = bytes(encoding)
+    asembly_cache[asm_hash] = byts
+    return byts
 
 
 def read_ptr(handle, address: int) -> int:
@@ -299,6 +348,7 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
     remote_memory = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 1000, 0x3000, 0x04)
     if not remote_memory:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
+    print("remote_memory:", remote_memory)
     
     size = 0x20000000
     shell_code_address = 0
@@ -311,13 +361,14 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
         )
         if shell_code_address == 0:
             print("Could not allocate jump table; this can be somewhat random. Please try again.")
-
+    print("shell_code_address:", shell_code_address)
 
     # Allocate register-save area (writable)
     register_save_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 4096, 0x3000, 0x04)
     if register_save_address == 0:
         print(f"Failed to allocate register_save_address in target process: {ctypes.WinError()}")
         sys.exit(0)
+    print("register_save_address:", register_save_address)
 
     size = 0x10000000
     code_injection_address = 0
@@ -330,17 +381,17 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
         )
         if code_injection_address == 0:
             print(f"Failed to allocate code_injection_address in target process: {ctypes.WinError()}")
-    
+    print("code_injection_address:", code_injection_address)
 
     thread_storage_list_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 8*max_thread_ids, 0x3000, 0x04)
     if thread_storage_list_address == 0:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
-    
+    print("thread_storage_list_address:", thread_storage_list_address)
     
     alocated_thread_storages = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, nr_of_prepared_alocations*8, 0x3000, 0x04)
     if alocated_thread_storages == 0:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
-    
+    print("alocated_thread_storages:", alocated_thread_storages)
     
     # Inject helper DLL with MinHook-based hooks
     run_loadlibrary_in_process(process_handle, "calltracer.dll") #FIXMEEE process
@@ -790,17 +841,27 @@ jmp [rsp - {rsp_ofset+8}] ;jump to restore return address
     
 
 
+class PDataIndex:
+    def __init__(self, pdata_functions):
+        # sort once by start address
+        self.pdata = sorted(pdata_functions, key=lambda e: e[0])
+        self.starts = [e[0] for e in self.pdata]   # start addresses
+
+    def get_function_containing(self, address):
+        # find rightmost start <= address
+        i = bisect.bisect_right(self.starts, address) - 1
+        if i >= 0:
+            start, end, uinfo, pord, pextra = self.pdata[i]
+            if address < end:                      # inside [start, end)
+                return (start, end, uinfo, pord, pextra)
+        return None
 
 def get_function_containing(address):
     """
     Return the (function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal)
     tuple that contains the given address, or None if not found.
     """
-    for entry in pdata_functions:
-        function_start_addr, function_end_addr, _, _,_ = entry
-        if function_start_addr <= address < function_end_addr:
-            return entry
-    return None
+    return pdata_index.get_function_containing(address)
     
 def analyse_executable_code(process_handle):
     global disassembled_functions, function_map, functions_end, loaded_modules
@@ -809,7 +870,9 @@ def analyse_executable_code(process_handle):
     if len(disassembled_functions) == 0:
         if os.path.exists(disassembled_cache_file) and time.time() - os.path.getmtime(disassembled_cache_file) < 12 * 3600:
             with open(disassembled_cache_file, "r") as f:
-                disassembled_functions = json.load(f)
+                loaded_json = json.load(f)
+                for index in loaded_json:
+                    disassembled_functions[int(index)] = loaded_json[index]
     
     print("disassemble and analyse instructions", len(pdata_functions))
     
@@ -819,8 +882,8 @@ def analyse_executable_code(process_handle):
         print("disassemble:", function_id, "len:", func_len)
         
         # Disassemble and patch CALL instructions in the function body
-        if len(disassembled_functions) > pdata_ordinal:
-            instructions = disassembled_functions[pdata_ordinal]
+        if function_start_addr in disassembled_functions:
+            instructions = disassembled_functions[function_start_addr]
         else:
             #try:
             instcode = hook_lib.read(process_handle, function_start_addr, func_len)
@@ -828,7 +891,7 @@ def analyse_executable_code(process_handle):
             #except:
             #    instructions = [] #DEBUG shit for disasemble failures
             
-            disassembled_functions.append(instructions)
+            disassembled_functions[function_start_addr] = instructions
             save_cache = True
         prolog = []
         prolog_end = function_start_addr + prolog_size
@@ -875,17 +938,22 @@ def analyse_executable_code(process_handle):
                 if reg is None and reg2 is None:
                     to_addr = offset
                     if indirect:
-                        to_addr = read_ptr(process_handle, offset)
+                        try:
+                            to_addr = read_ptr(process_handle, offset)
+                        except:
+                            print("could not read from indirect address:", offset, "asm:", instruction_asm)
+                            to_addr = None
                     
-                    if is_jump:
-                        if to_addr not in jumps:
-                            jumps[to_addr] = []
-                        jumps[to_addr].append(instruction)
-                    
-                    elif is_call_inst:
-                        if to_addr not in calls:
-                            calls[to_addr] = []
-                        calls[to_addr].append(instruction)
+                    if to_addr is not None:
+                        if is_jump:
+                            if to_addr not in jumps:
+                                jumps[to_addr] = []
+                            jumps[to_addr].append(instruction)
+                        
+                        elif is_call_inst:
+                            if to_addr not in calls:
+                                calls[to_addr] = []
+                            calls[to_addr].append(instruction)
                 elif is_jump:
                     print("WARNING dynamic jump:", instruction)
         
@@ -915,9 +983,16 @@ def analyse_executable_code(process_handle):
                 
                 max_end = min(max_end, max_mod_end)
                 size = max_end - func_addr
-                print("posible size:", size)
-                instcode = hook_lib.read(process_handle, func_addr, min(size, 512))
-                instructions = hook_lib.disasm(func_addr, instcode)
+                #print("posible size:", size)
+                if func_addr in disassembled_functions:
+                    instructions = disassembled_functions[func_addr]
+                else:
+                    instcode = hook_lib.read(process_handle, func_addr, min(size, 512))
+                    instructions = hook_lib.disasm(func_addr, instcode)
+                    
+                    disassembled_functions[func_addr] = instructions
+                    save_cache = True
+                
                 print("non listed func:", func_addr, "len:", size)
                 if len(instructions) > 0 and False:
                     first_instruciton = instructions[0]
@@ -947,7 +1022,7 @@ def analyse_executable_code(process_handle):
                                 break
                             repeat_int3 = 0
                         
-                        print(instruction_asm)
+                        #print(instruction_asm)
                         is_unconditional_jump = inst_name == 'jmp'
                         if is_linear and is_unconditional_jump:
                             classfied = "thunk"
@@ -980,6 +1055,9 @@ def analyse_executable_code(process_handle):
                     if classfied == "thunk" or classfied == "mini_func":
                         for inst in instructions:
                             
+                            if max_end == inst[0]:
+                                break
+                            
                             is_jump = inst[2].startswith("j")
                             if is_jump:
                                 reg, reg2, reg2_mult, indirect, offset = asm2regaddr(inst)
@@ -987,13 +1065,18 @@ def analyse_executable_code(process_handle):
                                 if reg is None and reg2 is None:
                                     to_addr = offset
                                     if indirect:
-                                        to_addr = read_ptr(process_handle, offset)
+                                        try:
+                                            to_addr = read_ptr(process_handle, offset)
+                                        except:
+                                            print("could not read from indirect address:", offset, "asm:", inst[2])
+                                            to_addr = None
                                     
-                                    thunk_jmps.append(to_addr)
-                                    
-                                    if to_addr not in jumps:
-                                        jumps[to_addr] = []
-                                    jumps[to_addr].append(instruction)
+                                    if to_addr is not None:
+                                        thunk_jmps.append(to_addr)
+                                        
+                                        if to_addr not in jumps:
+                                            jumps[to_addr] = []
+                                        jumps[to_addr].append(instruction)
                     
                     size = max_end - func_addr
                     classfied_extra_functions.append({
@@ -1008,7 +1091,7 @@ def analyse_executable_code(process_handle):
                         "calls": []
                     })
                     print("classfied:", classfied, "size:", size)
-                print("\n")
+                #print("\n")
         else:
             print("no module at addr:", func_addr)
     #find_first_func
@@ -1064,8 +1147,8 @@ def hook_calls(process_handle) -> None:
         }
         
         if pdata_ordinal not in function_exclusions:
-            instructions = truncate_instructions(disassembled_functions[pdata_ordinal], end_addr)
-            doing_calls = True
+            instructions = truncate_instructions(disassembled_functions[function_start_addr], end_addr)
+            doing_calls = trace_all_calls
             if end_addr is not None:
                 if exclude_call_tracing_in_force_truncated_functions:
                     doing_calls = False
@@ -1518,12 +1601,12 @@ mov     [r15-100], rax
                     )
 
                     
-                asms = asm(dsg_asm, new_instruction_address)
-                inst = hook_lib.disasm(new_instruction_address, asms)
-                disasem = inst[0][2]
+                #asms = asm(dsg_asm, new_instruction_address)
+                #inst = hook_lib.disasm(new_instruction_address, asms)
+                #disasem = inst[0][2]
                 
-                lreg, lreg2, lreg2_mult, lindirect, loffset = asm2regaddr(inst[0])
-                print("dbg:", instruction_asm, disasem, lreg, lreg2, lreg2_mult, lindirect, loffset)
+                #lreg, lreg2, lreg2_mult, lindirect, loffset = asm2regaddr(inst[0])
+                #print("dbg:", instruction_asm, disasem, lreg, lreg2, lreg2_mult, lindirect, loffset)
                 
                 
                 dbg_call_code = asm(dsg_asm, new_instruction_address)
@@ -2206,37 +2289,8 @@ def asm2regaddr(code: Tuple[int, int, str, str]):
         
 
 def strip_semicolon_comments(asm: str) -> str:
-    """
-    Remove everything from the first ';' to the end of the line for each line in `asm`.
-    Preserves original line endings and leading indentation, trims trailing whitespace.
-    """
-    out_lines = []
-    for line in asm.splitlines(True):  # keep line endings
-        # find position of ';' before any newline characters
-        # handle lines that may end with '\r\n' or '\n'
-        if line.endswith('\r\n'):
-            eol = '\r\n'
-            body = line[:-2]
-        elif line.endswith('\n'):
-            eol = '\n'
-            body = line[:-1]
-        elif line.endswith('\r'):
-            eol = '\r'
-            body = line[:-1]
-        else:
-            eol = ''
-            body = line
-
-        idx = body.find(';')
-        if idx != -1:
-            body = body[:idx]
-
-        # strip trailing whitespace from the kept part (but keep leading whitespace)
-        body = body.rstrip()
-
-        out_lines.append(body + eol)
-
-    return ''.join(out_lines)
+    # preserves newlines, removes ';' comments + space before them
+    return _strip_semicolon_comments.sub('', asm)
     
 def generate_clean_asm_func_call(code, in_two_parts = False, debug = False, save_full=True):
     global register_save_address, thread_storage_list_address
@@ -2305,7 +2359,7 @@ def on_calltrace_dll_ready(handle):
 
 def get_pdata(file_name: str, base_addr: int, exe_basic_name: str) -> None:
     """Parse .pdata from file on disk and populate function ranges & IDs."""
-    global pdata, pdata_functions, exe_entry_address, pdata_function_ids, area_for_function_table
+    global pdata, pdata_functions, exe_entry_address, pdata_function_ids, area_for_function_table, pdata_index
 
     
     functions: List[Tuple[int, int, int, int]] = []
@@ -2328,6 +2382,8 @@ def get_pdata(file_name: str, base_addr: int, exe_basic_name: str) -> None:
         nr_of_functions = len(functions)
         area_for_function_table = (nr_of_functions+1)*8#(we add  one just in case i dont remember if ordinal was zero or one indexed)
     pdata_functions = functions
+    pdata_index = PDataIndex(pdata_functions)
+
 
 
 # -----------------------------
