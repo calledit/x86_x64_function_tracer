@@ -3,11 +3,15 @@ import struct
 from dataclasses import dataclass
 from typing import Optional
 from pdbparse.symlookup import Lookup
-
+import bisect
 
 import download_pdb
 import json
 import os
+
+
+_func_map = []
+_func_starts = []
 
 
 def get_mod_containing(address):
@@ -24,14 +28,20 @@ def get_mod_containing(address):
 
 def get_function_containing(address):
     """
-    Return the (function_start_addr, function_end_addr, unwind_info_addr, pdata_ordinal)
-    tuple that contains the given address, or None if not found.
+    Binary search for the function that contains `address`.
+    Assumes `build_func_index()` was called once after func_map is loaded.
     """
-    for entry in func_map:
-        function_start_addr, function_end_addr = entry['function_start_addr'], entry['function_end_addr']
-        if function_start_addr <= address < function_end_addr:
+    i = bisect.bisect_right(_func_starts, address) - 1
+    if i >= 0:
+        entry = _func_map[i]
+        if address < entry['function_end_addr']:
             return entry
     return None
+    
+def build_func_index(func_map):
+    global _func_map, _func_starts
+    _func_map = sorted(func_map, key=lambda e: e['function_start_addr'])
+    _func_starts = [e['function_start_addr'] for e in _func_map]
 
 def get_name_of_function(address):
     if address in functions:
@@ -153,6 +163,7 @@ if __name__ == '__main__':
     parser.add_argument('--file', type=str, required=True, help='Binary trace file')
     parser.add_argument('--modules', type=str, required=False, help='File with modules')
     parser.add_argument('--map', type=str, required=False, help='File with modules')
+    parser.add_argument('--lookup', type=int, required=False, help='Address to lookup')
     args = parser.parse_args()
     
     
@@ -170,7 +181,13 @@ if __name__ == '__main__':
             for func in func_map:
                 functions[func['function_start_addr']] = func
                 ordinal2addr[func['ordinal']] = func['function_start_addr']
+            build_func_index(func_map)
     
+    
+    if args.lookup is not None:
+        name_of_address = get_name_of_function(args.lookup)
+        print(name_of_address)
+        exit()
     
     #print(get_mod_containing(140695557676265))
     #exit()

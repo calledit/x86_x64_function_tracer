@@ -44,12 +44,11 @@ from functools import partial
 from keystone import Ks, KS_ARCH_X86, KS_MODE_64, KsError
 from typing import Dict, List, Tuple, Optional, Callable, Any
 import traceback
-import random
 import hook_lib
 import locale
 import bisect
 import hashlib
-
+import argparse
 import re
 _strip_semicolon_comments = re.compile(r'[ \t]*;[^\r\n]*')
 
@@ -96,6 +95,7 @@ pdata_function_ids: Dict[int, str] = {}
 exe_entry_address: int = 0
 disassembled_functions = {}
 asembly_cache = {}
+function_data = {}
 
 # Simple call stack for pretty printing
 call_stack: List[str] = []
@@ -106,6 +106,7 @@ functions_to_hook: List[Tuple[int, Callable[[Any], None], Callable[[Any], None]]
 
 moved_instructions = {}
 ref_instructions = {}
+suspended = False
 
 # Initialize Keystone for x64.
 ks = Ks(KS_ARCH_X86, KS_MODE_64)
@@ -130,11 +131,13 @@ call_trace_dll_ready = False
 load_dll_tid = -1
 jumps = {}
 calls = {}
-trace_all_calls = True
+jumps_index = []
+calls_index = []
 classfied_extra_functions = []
 max_thread_ids = 30000
 
 os.makedirs('output', exist_ok=True)
+os.makedirs('cache', exist_ok=True) 
 out_file = None
 
 call_map = []
@@ -143,12 +146,17 @@ functions_end = {}
 exe_basic_name = None
 exe_name = None
 
-forbid_break_point_jumps = False
-
-do_call_tracing = True
-only_allow_single_instruction_replacements = False
+forbid_break_point_jumps = False # if set to try break point jumps are not used (meaning some functions that need them wont be traced)
+only_replace_single_instruction_init = False # Only replace the first instruciton in the function init
+only_allow_single_instruction_replacements = False # When tracing calls only allow one instruction replacement, leads to many uses of break point jumps whereever a 5 byte jump wont fit (breakpoint jumps are SLOW) ONLY applies to call replacements not INIT replacements.
 exclude_call_tracing_in_force_truncated_functions = True
+use_calls_for_patching = False #Replaces jumps with UNMOVABLE calls. NOT recomended as it is this is more or less a useless function that only clobers the stack.
 redirect_return = False
+respect_prolog_size = False #If we wont replace any instructions after the said prolog size
+forbid_all_tracing = False #does not add any tracing code just injects. For use in testing when program craches
+trace_all_calls = True
+
+
 
 call_exclusions = [
     #(2666, 0),
@@ -187,9 +195,16 @@ def start_or_attach(argv: List[str]) -> None:
     """Start or attach to the given executable.
 
     """
-    global spawned, exe_basic_name, out_file, exe_name, asembly_cache
+    global spawned, exe_basic_name, out_file, exe_name, asembly_cache, suspended
     pid = None
-    arg1 = sys.argv[1]
+    p = argparse.ArgumentParser(description="Run a for-loop over each line of a file.")
+    p.add_argument("executable", help="pid or executable")
+    p.add_argument("--pause_on_load", action="store_true", help="Wait for the proces to start and load kernel32.dll then pauses it")
+    p.add_argument("--only_analyse", action="store_true", help="Only does executable analysis")
+    p.add_argument("--memory_scan", action="store_true", help="scans the executable periodicly for changes in executable code. Changes like hooks and unpacking.")
+    args = p.parse_args()
+    
+    arg1 = args.executable
     
     if arg1.isdigit():
         pid = int(arg1)
@@ -202,39 +217,44 @@ def start_or_attach(argv: List[str]) -> None:
         else:
             # leave as name (we will match by basename)
             exe_path = exe
-
-        # 1) find running PIDs
-        pids = hook_lib.get_pids_by_name(exe_path)
-        if pids:
-            if len(pids) > 1:
-                print(f"Found {len(pids)} running process(es) named '{os.path.basename(exe_path)}': {pids} selecting first pid")
-            pid = pids[0]
+            
+        if args.pause_on_load:
+            print("searching for launch of:", exe)
+            while True:
+                pids = hook_lib.get_pids_by_name(exe)
+                if len(pids) >= 1:
+                    pid = pids[0]
+                    break
         else:
-            print(f"No running process named '{os.path.basename(exe_path)}' found. Attempting to start it...")
-            pid = hook_lib.try_start_executable(exe_path)
-            spawned = True
+            # 1) find running PIDs
+            pids = hook_lib.get_pids_by_name(exe_path)
+            if pids:
+                if len(pids) > 1:
+                    print(f"Found {len(pids)} running process(es) named '{os.path.basename(exe_path)}': {pids} selecting first pid")
+                pid = pids[0]
+            else:
+                print(f"No running process named '{os.path.basename(exe_path)}' found. Attempting to start it...")
+                pid = hook_lib.try_start_executable(exe_path)
+                spawned = True
     
     
     
     handle = hook_lib.get_handle(pid)
     
     executable_path = hook_lib.get_process_image_path(handle)
-    mods = None
-    while True:
-        try:
-            mods = hook_lib.enumerate_modules(handle, do_until_sucess = True, base_name = True)
-            if "kernel32.dll" in mods:
-                break
-        except OSError as e:
-            print("enumerate_modules faield trying again")
+    
+    mods = wait_for_kernel32(handle)
+    
     
     # if we just spawned the process we suspend it now that kernel32 is loaded to try to catch as much of the activity as posible
     # some activity might still get lost as the way we probe for kernel32 is async but doing it syncronysly would be much more complicated
-    if spawned:
-        hook_lib.NtSuspendProcess(handle)
-    
-    
-    
+
+    if spawned or args.pause_on_load:
+        print("suspending process")
+        suspended = True
+        res = hook_lib.NtSuspendProcess(handle)
+        
+
     exe_basic_name = get_base_name(executable_path)
     exe_name = executable_path.split("\\")[-1].lower()
     out_file = os.path.abspath('output'+os.sep+exe_basic_name+'.trace')
@@ -242,8 +262,11 @@ def start_or_attach(argv: List[str]) -> None:
         os.remove(out_file)
     
     base_addr = mods[exe_name]['base']
+    
+    
+    
 
-    assembled_cache_file = exe_basic_name + "_asembly_cache.json"
+    assembled_cache_file = "cache\\" + exe_basic_name + "_asembly_cache.json"
     
     if os.path.exists(assembled_cache_file) and time.time() - os.path.getmtime(assembled_cache_file) < 12 * 3600:
         with open(assembled_cache_file, "r") as f:
@@ -253,24 +276,62 @@ def start_or_attach(argv: List[str]) -> None:
     
     get_pdata(executable_path, base_addr, exe_basic_name)
     
-    allocate_mem_and_inject_dll(handle, exe_entry_address)
+    print("analyse_executable_code")
     
-    on_calltrace_dll_ready(handle)
+    if args.memory_scan:
+        map_file = "output\\"+exe_basic_name+'_map.json'
+        if not os.path.exists(map_file):
+            raise Exception("no function map found, run with --only_analyse first (wait for unpacking first if executable does unpacking)")
+        
+        with open(map_file, "r") as f:
+            call_map = json.load(f)
+        
+        process_is_still_running = True
+        while process_is_still_running:
+            print("read and compare memmory")
+            
+            time.sleep(1.0)
+    else:
+        analyse_executable_code(handle)
+    if not args.only_analyse or not args.memory_scan:
+        allocate_mem_and_inject_dll(handle, exe_entry_address)
+        
+        lookup_calltrace_exports(handle)
+        
+        inject_trace_injection_functions(handle)
     
-    if spawned:
+        print("hooking executable")
+        hook_calls(handle)
+    
+    if suspended:
+        print("resuming process")
         hook_lib.NtResumeProcess(handle)
+        suspended = False
     
-    with open(assembled_cache_file, "w") as f:
-        for key in asembly_cache:
-            asembly_cache[key] = asembly_cache[key].hex()
-        json.dump(asembly_cache, f, indent=2)
+    if not args.only_analyse or not args.memory_scan:
+        with open(assembled_cache_file, "w") as f:
+            for key in asembly_cache:
+                asembly_cache[key] = asembly_cache[key].hex()
+            json.dump(asembly_cache, f, indent=2)
     
     s = io.StringIO()
     ps = pstats.Stats(pr, stream=s).sort_stats('cumulative')
     ps.print_stats(30)
     print(s.getvalue())
     
+def memory_scan(handle):
+    pass
 
+def wait_for_kernel32(handle):
+    mods = None
+    while True:
+        try:
+            mods = hook_lib.enumerate_modules(handle, do_until_sucess = True, base_name = True)
+            if "kernel32.dll" in mods:
+                break
+        except OSError as e:
+            pass #print("enumerate_modules faield trying again")
+    return mods
 
 def get_base_name(filename: str) -> str:
     """Return lowercase filename without extension from a Windows path."""
@@ -352,17 +413,22 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
     
     size = 0x20000000
     shell_code_address = 0
+    atempt = 1
     while shell_code_address == 0:
         # Allocate large RX region for shellcode near code
         
-        preferred_address = (address_close_to_code - size* random.randint(1, 3))
+        preferred_address = (address_close_to_code - size* atempt)
         shell_code_address = ctypes.windll.kernel32.VirtualAllocEx(
             process_handle, ctypes.c_void_p(preferred_address), size, 0x3000, 0x40
         )
         if shell_code_address == 0:
             print("Could not allocate jump table; this can be somewhat random. Please try again.")
+            if atempt > 3:
+                size //=4
+                size *= 3
+            atempt += 1
     print("shell_code_address:", shell_code_address)
-
+    last_seize = size
     # Allocate register-save area (writable)
     register_save_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 4096, 0x3000, 0x04)
     if register_save_address == 0:
@@ -370,18 +436,6 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
         sys.exit(0)
     print("register_save_address:", register_save_address)
 
-    size = 0x10000000
-    code_injection_address = 0
-    while code_injection_address == 0:
-        # Allocate secondary RX region for injected stub code
-        preferred_address = address_close_to_code - size * random.randint(1, 20)
-
-        code_injection_address = ctypes.windll.kernel32.VirtualAllocEx(
-            process_handle, ctypes.c_void_p(preferred_address), 0x100000, 0x3000, 0x40
-        )
-        if code_injection_address == 0:
-            print(f"Failed to allocate code_injection_address in target process: {ctypes.WinError()}")
-    print("code_injection_address:", code_injection_address)
 
     thread_storage_list_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, 8*max_thread_ids, 0x3000, 0x04)
     if thread_storage_list_address == 0:
@@ -399,8 +453,8 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
     
     
     
-def setup_after_dll_loaded(process_handle):
-    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages, debug_func_address
+def inject_trace_injection_functions(process_handle):
+    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages, debug_func_address, add_entry_trace_address, add_called_trace_address, add_call_trace_address, add_exit_trace_address
     
     
     print("Set set_area_for_function_table")
@@ -421,8 +475,8 @@ def setup_after_dll_loaded(process_handle):
     save_state_asm = strip_semicolon_comments(f"""
 ; ===== prologue: preserve flags & callee-saved registers =====
 pushfq
-sub   rsp, 8
 
+sub   rsp, 8
 ; save callee-saved GPRs that we will use or clobber
 push r15
 mov r15, rsp
@@ -825,6 +879,115 @@ jmp [rsp - {rsp_ofset+8}] ;jump to restore return address
     hook_lib.write(process_handle, restore_state_address, restore_state_code, do_checks = False)
 
     
+    add_entry_trace_address = shell_code_address
+    add_entry_trace_code = asm(strip_semicolon_comments("""
+add r12, """+str(area_for_xsave64)+"""
+;Save tracing
+mov r10, r12
+add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
+
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
+
+mov     byte ptr [r8], 1 ;type 1 is function entry (1 byte)
+mov     eax, dword ptr gs:[0x48]
+mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
+mov     dword ptr [r8 + 5],  edx;Save function ordinal(4 bytes) edx is a function argument
+rdtsc                 ; EDX:EAX = TSC
+shl     rdx, 32       ; move high half up
+or      rax, rdx      ; RAX = (EDX<<32) | EAX
+mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
+
+mov     qword ptr [r8 + 17], r15 ;save return address pointer/function entry rsp(8 bytes)
+mov     rcx, [r15]              ;
+mov     qword ptr [r8 + 25], rcx ;save return address (8 bytes) 
+lea     r8, [r8+33]
+mov [r10], r8
+ret"""), add_entry_trace_address)
+    shell_code_address += len(add_entry_trace_code)
+    hook_lib.write(process_handle, add_entry_trace_address, add_entry_trace_code, do_checks = False)
+    
+    
+
+    add_exit_trace_address = shell_code_address
+    add_exit_trace_code = asm(strip_semicolon_comments("""add r12, """+str(area_for_xsave64)+"""
+
+;Save tracing
+mov r10, r12
+add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
+
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
+
+mov     byte ptr [r8], 2 ;type 2 is function exit (1 byte)
+mov     eax, dword ptr gs:[0x48]
+mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
+mov     dword ptr [r8 + 5],  edx;Save function ordinal(4 bytes) edx is a function argument
+rdtsc                 ; EDX:EAX = TSC
+shl     rdx, 32       ; move high half up
+or      rax, rdx      ; RAX = (EDX<<32) | EAX
+mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
+mov     qword ptr [r8 + 17], r15 ;save return address pointer(8 bytes)
+
+lea     r8, [r8+25]
+mov [r10], r8
+ret"""), add_exit_trace_address)
+    shell_code_address += len(add_exit_trace_code)
+    hook_lib.write(process_handle, add_exit_trace_address, add_exit_trace_code, do_checks = False)
+    
+    
+    add_call_trace_address = shell_code_address
+    add_call_trace_code = asm(strip_semicolon_comments("""add r12, """+str(area_for_xsave64)+"""
+
+;Save tracing
+mov r10, r12
+add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
+
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
+
+mov     byte ptr [r8], 3 ;type 3 is function call (1 byte)
+mov     eax, dword ptr gs:[0x48]
+mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
+mov     dword ptr [r8 + 5],  edx;Save function ordinal(4 bytes) edx is a function argument
+rdtsc                 ; EDX:EAX = TSC
+shl     rdx, 32       ; move high half up
+or      rax, rdx      ; RAX = (EDX<<32) | EAX
+mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
+
+mov     dword ptr [r8 + 17], edi ;save call num (4 bytes) edi is a function argument
+mov     rax, [r15-8] ;  arg target address # original rsp in rax, saved in r15 by save_target_asm
+mov     qword ptr [r8 + 21], rax ;save raget_address (8 bytes)
+lea     r8, [r8+29]
+mov [r10], r8
+ret"""), add_call_trace_address)
+    shell_code_address += len(add_call_trace_code)
+    hook_lib.write(process_handle, add_call_trace_address, add_call_trace_code, do_checks = False)
+    
+    add_called_trace_address = shell_code_address
+    add_called_trace_code = asm(strip_semicolon_comments("""
+
+add r12, """+str(area_for_xsave64)+"""
+
+;Save tracing
+mov r10, r12
+add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
+;int1 ;DEBUGBS 
+mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
+
+mov     byte ptr [r8], 4 ;type 4 is function called (1 byte)
+mov     eax, dword ptr gs:[0x48]
+mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
+mov     dword ptr [r8 + 5],  edx;Save function ordinal(4 bytes) edx is a function argument
+rdtsc                 ; EDX:EAX = TSC
+shl     rdx, 32       ; move high half up
+or      rax, rdx      ; RAX = (EDX<<32) | EAX
+mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
+
+mov     dword ptr [r8 + 17], edi ;save call num (4 bytes) edi is a function argument
+lea     r8, [r8+21]
+mov [r10], r8
+
+ret"""), add_called_trace_address)
+    shell_code_address += len(add_called_trace_code)
+    hook_lib.write(process_handle, add_called_trace_address, add_called_trace_code, do_checks = False)
     
     print("setting up thread storage")
     
@@ -833,11 +996,6 @@ jmp [rsp - {rsp_ofset+8}] ;jump to restore return address
     for stor_id in range(nr_of_prepared_alocations):
         hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + stor_id*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nret")
     
-    print("hooking executable")
-    
-    analyse_executable_code(process_handle)
-    
-    hook_calls(process_handle)
     
 
 
@@ -855,6 +1013,12 @@ class PDataIndex:
             if address < end:                      # inside [start, end)
                 return (start, end, uinfo, pord, pextra)
         return None
+        
+    def find_first_func(self, address):
+        i = bisect.bisect_left(self.starts, address)
+        if i == len(self.starts):
+            return None
+        return self.starts[i]
 
 def get_function_containing(address):
     """
@@ -862,17 +1026,54 @@ def get_function_containing(address):
     tuple that contains the given address, or None if not found.
     """
     return pdata_index.get_function_containing(address)
+
+def get_cache_data(address, length):
+    """
+    address: target memory address
+    length: number of bytes wanted
+    """
+
+    # find correct function blob via your fast function
+    func_start, func_end, flags, pdata_ordinal, prolog_size = get_function_containing(address)
+
+    # get raw bytes blob stored for that function
+    blob = function_data.get(func_start)
+    if blob is None:
+        raise KeyError(f"No cache entry for function start {hex(func_start)}")
+
+    # compute offset in that blob
+    offset = address - func_start
+    end = offset + length
+
+    # bounds check
+    if offset < 0 or end > len(blob):
+        raise ValueError(
+            f"Requested range {hex(address)}..{hex(address+length)} outside blob "
+            f"for func {hex(func_start)} (size {len(blob)})"
+        )
+
+    # slice and return bytes
+    return blob[offset:end]
+
     
 def analyse_executable_code(process_handle):
-    global disassembled_functions, function_map, functions_end, loaded_modules
-    disassembled_cache_file = exe_basic_name + "_instructions_cache.json"
+    global disassembled_functions, function_map, functions_end, loaded_modules, calls_index, jumps_index, function_data
+    disassembled_cache_file = "cache\\" + exe_basic_name + "_instructions_cache.json"
+    function_data_cache_file = "cache\\" + exe_basic_name + "_function_data_cache.json"
     save_cache = False
-    if len(disassembled_functions) == 0:
-        if os.path.exists(disassembled_cache_file) and time.time() - os.path.getmtime(disassembled_cache_file) < 12 * 3600:
-            with open(disassembled_cache_file, "r") as f:
-                loaded_json = json.load(f)
-                for index in loaded_json:
-                    disassembled_functions[int(index)] = loaded_json[index]
+    save_function_data_cache = False
+    
+    if os.path.exists(disassembled_cache_file) and time.time() - os.path.getmtime(disassembled_cache_file) < 12 * 3600:
+        with open(disassembled_cache_file, "r") as f:
+            loaded_json = json.load(f)
+            for index in loaded_json:
+                disassembled_functions[int(index)] = loaded_json[index]
+    
+    if os.path.exists(function_data_cache_file) and time.time() - os.path.getmtime(function_data_cache_file) < 12 * 3600:
+        with open(function_data_cache_file, "r") as f:
+            loaded_json = json.load(f)
+            for index in loaded_json:
+                function_data[int(index)] = bytes.fromhex(loaded_json[index])
     
     print("disassemble and analyse instructions", len(pdata_functions))
     
@@ -881,21 +1082,22 @@ def analyse_executable_code(process_handle):
         func_len = function_end_addr - function_start_addr
         print("disassemble:", function_id, "len:", func_len)
         
+        if function_start_addr not in function_data:
+            function_data[function_start_addr] = hook_lib.read(process_handle, function_start_addr, func_len)
+            save_function_data_cache = True
+        
         # Disassemble and patch CALL instructions in the function body
         if function_start_addr in disassembled_functions:
             instructions = disassembled_functions[function_start_addr]
         else:
-            #try:
-            instcode = hook_lib.read(process_handle, function_start_addr, func_len)
-            instructions = hook_lib.disasm(function_start_addr, instcode)
-            #except:
-            #    instructions = [] #DEBUG shit for disasemble failures
-            
+            instructions = hook_lib.disasm(function_start_addr, function_data[function_start_addr])
             disassembled_functions[function_start_addr] = instructions
             save_cache = True
         prolog = []
         prolog_end = function_start_addr + prolog_size
         
+        function_calls = []
+        function_jumps = []
         #try to find jumps so we know what jumps backward and to some extent where
         for instruction_num, instruction in enumerate(instructions):
             instruction_asm = instruction[2]
@@ -933,7 +1135,29 @@ def analyse_executable_code(process_handle):
                     break
             
             if is_jump or is_call_inst:
+                
+                
                 reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruction)
+                
+                
+                info = {
+                    "address": instruction[0],
+                    "return_address": instruction[0] + instruction[1],
+                    "asm": instruction_asm,
+                    "indirect": indirect,
+                }
+                if (reg is None or (reg is not None and reg.lower() == "rip")) and offset is not None:
+                    if not indirect:
+                        rip_to = offset
+                        info['target'] = rip_to
+                    else:
+                        info['target_pointer'] = offset
+                        try:
+                            trg = read_ptr(process_handle, offset)
+                        except:
+                            trg = None
+                        info['target'] = trg
+                
                 to_addr = None
                 if reg is None and reg2 is None:
                     to_addr = offset
@@ -956,7 +1180,42 @@ def analyse_executable_code(process_handle):
                             calls[to_addr].append(instruction)
                 elif is_jump:
                     print("WARNING dynamic jump:", instruction)
+                
+                if is_call_inst:
+                    info['call_num'] = len(function_calls)
+                    function_calls.append(info)
+                if is_jump:
+                    info['jump_num'] = len(function_jumps)
+                    function_jumps.append(info)
         
+        end_addr = None
+        if function_start_addr in functions_end:
+            end_addr = functions_end[function_start_addr]
+        
+        function_map = {
+            "ordinal": pdata_ordinal,
+            "function_id":function_id,
+            "function_start_addr": function_start_addr,
+            "function_end_addr": function_end_addr,
+            "function_force_end_truncate": end_addr,
+            "unlisted": False,
+            "flags": flags,
+            "calls": function_calls
+        }
+        call_map.append(function_map)
+    
+    if save_cache:
+        with open(disassembled_cache_file, "w") as f:
+            json.dump(disassembled_functions, f, indent=2)
+    
+    if save_function_data_cache:
+        with open(function_data_cache_file, "w") as f:
+            func_save = {}
+            for index in function_data:
+                func_save[index] = function_data[index].hex()
+            json.dump(func_save, f, indent=2)
+    
+    
     #find non listed_functions
     resolved_calls = []
     for address in calls:
@@ -966,7 +1225,8 @@ def analyse_executable_code(process_handle):
     #reload modules incase any more has been loaded
     loaded_modules = hook_lib.enumerate_modules(process_handle, base_name = True)
     
-    
+    calls_index = list(calls.keys())
+    jumps_index = list(jumps.keys())
     
     for func_addr in resolved_calls:
         classfied = None
@@ -1094,17 +1354,30 @@ def analyse_executable_code(process_handle):
                 #print("\n")
         else:
             print("no module at addr:", func_addr)
+    
+    for func_desc in classfied_extra_functions:
+        func_desc['ordinal'] = len(call_map)
+        func_desc['function_id'] += "_unlisted_" + str(func_desc['ordinal'])
+        call_map.append(func_desc)
+    
+    loaded_modules = hook_lib.enumerate_modules(process_handle, base_name = True)
+    module_file = "output\\"+exe_basic_name+'_modules.json'
+    with open(module_file, "w") as f:
+        json.dump(loaded_modules, f, indent=2)
+    
+    map_file = "output\\"+exe_basic_name+'_map.json'
+    with open(map_file, "w") as f:
+        json.dump(call_map, f, indent=2)
+    
     #find_first_func
     #print(prolog)#might use prolog to find end of function at some point
     
-    if save_cache:
-        with open(disassembled_cache_file, "w") as f:
-            json.dump(disassembled_functions, f, indent=2)
+    
     
 
 def hook_calls(process_handle) -> None:
     """Disassemble functions and patch CALLs to insert call-site tracing breakpoints."""
-    global disassembled_functions, function_map, functions_end, loaded_modules
+    global disassembled_functions, function_map, functions_end, loaded_modules, suspended
     # Cache to avoid repeated disassembly of large binaries
     
     
@@ -1135,16 +1408,6 @@ def hook_calls(process_handle) -> None:
         #if flags == 4 or flags == 1 or flags == 2 or flags == 3 or flags != 0:
         #    function_exclusions.append(pdata_ordinal)
         
-        function_map = {
-            "ordinal": pdata_ordinal,
-            "function_id":function_id,
-            "function_start_addr": function_start_addr,
-            "function_end_addr": function_end_addr,
-            "function_force_end_truncate": end_addr,
-            "unlisted": False,
-            "flags": flags,
-            "calls": []
-        }
         
         if pdata_ordinal not in function_exclusions:
             instructions = truncate_instructions(disassembled_functions[function_start_addr], end_addr)
@@ -1152,34 +1415,34 @@ def hook_calls(process_handle) -> None:
             if end_addr is not None:
                 if exclude_call_tracing_in_force_truncated_functions:
                     doing_calls = False
-                
-            insert_break_at_calls(process_handle, instructions, function_id, function_start_addr, pdata_ordinal, doing_init, doing_calls)
+            
+            insert_break_at_calls(process_handle, instructions, function_id, function_start_addr, pdata_ordinal, doing_init, doing_calls, prolog_size)
         
-        call_map.append(function_map)
     
     
-    for func_desc in classfied_extra_functions:
-        func_desc['ordinal'] = len(call_map)
-        func_desc['function_id'] += "_unlisted_" + str(func_desc['ordinal'])
-        call_map.append(func_desc)
         
     #process.resume()
     print("inserted tracers nr of calls:", len(call_map))
     
-    map_file = "output\\"+exe_basic_name+'_map.json'
-    with open(map_file, "w") as f:
-            json.dump(call_map, f, indent=2)
-            
+    #save modules file again incase new modules have been loaded since last time
     loaded_modules = hook_lib.enumerate_modules(process_handle, base_name = True)
     module_file = "output\\"+exe_basic_name+'_modules.json'
     with open(module_file, "w") as f:
-            json.dump(loaded_modules, f, indent=2)
+        json.dump(loaded_modules, f, indent=2)
     
-    if not spawned: #if it was spawned it is already suspended
+    if not suspended: #if it was spawned it is already suspended
         hook_lib.NtSuspendProcess(process_handle)
+    
     for insert_location, jmp_to_shellcode in jump_writes:
-        hook_lib.write(process_handle, insert_location, jmp_to_shellcode)
-    if not spawned:
+        insert_len = len(jmp_to_shellcode)
+        expected_bytes = get_cache_data(insert_location, insert_len)
+        actual_bytes = hook_lib.read(process_handle, insert_location, insert_len)
+        if actual_bytes == expected_bytes:
+            hook_lib.write(process_handle, insert_location, jmp_to_shellcode)
+        else:
+            print("skiping injection at addr: ", insert_location, " as the bytes have been changed meaning there is selfmodifying code doing stuff.")
+    
+    if not suspended:
         hook_lib.NtResumeProcess(process_handle)
     print("inserted calltracing")
     
@@ -1223,12 +1486,13 @@ def add_instruction_redirect(
     instructions: List[Tuple[int, int, str, str]],
     process_handle,
     call_num,
+    doing_calls,
 ) -> Tuple[Optional[int], int]:
     """Patch a single instruction (typically CALL) to redirect into shellcode that wraps it with int3 breakpoints.
 
     Returns (jump_to_address, break_point_entry). jump_to_address is None/False on failure.
     """
-    global shell_code_address_offset, shell_code_address
+    global shell_code_address_offset, shell_code_address, use_calls_for_patching
 
     code: List[bytes] = []
     jump_to_address = shell_code_address + shell_code_address_offset
@@ -1286,11 +1550,34 @@ def add_instruction_redirect(
     jmp_to_shellcode: Optional[bytes] = None
     asmm: Optional[str] = None
     jump_breakpoint = None
+    rsp_return = False
     if jump_type == "normal":
         to_address = jump_to_address
         if closer_alocation:
             to_address = closer_alocation
         asmm = f"jmp {to_address}" + (";nop" * extra_bytes)
+        if use_calls_for_patching:
+            asmm = f"call {to_address}" + (";nop" * extra_bytes)
+            
+            
+            #This does not work as the instructions we are about to exectue might alter rsp so we cant locate relative to rsp
+            #rsp_return = True
+            #save_ret = (
+            #    "push rax\n"
+            #    f"movabs rax, [rsp+8]\n"
+            #    f"mov [rsp-{rsp_ofset-24}], rax\n" #Place return address -8 behind rsp_ofset
+            #    "pop rax\n"
+            #    "lea rsp, [rsp+8]\n"
+            #)
+            
+            save_ret = "lea rsp, [rsp+8]\n"
+            code_a = asm(save_ret, new_instruction_address)
+            code.append(code_a)
+            new_instruction_address += len(code_a)
+            if redirect_return:
+                raise Exception("redirect_return will overwrite stuff in the stack when using use_calls_for_patching needs fixing")
+                #Fix by moving the return addres upp to the stack ofset (-128) in the stack on entry
+            
         jmp_to_shellcode = asm(asmm, insert_location)
     elif jump_type == "2byte":
         jmp_to_shellcode = b"\xCC" + (b"\x90" * extra_bytes)
@@ -1299,11 +1586,11 @@ def add_instruction_redirect(
         jmp_to_shellcode = b"\xCC"
         jump_breakpoint = insert_location
     
+    do_use_trace = True
     if forbid_break_point_jumps:
         if jump_type == "2byte" or jump_type == "1byte":
-            print("trace of function "+str(function_ordinal)+" / call ignored due to needing breakpoint")
-            raise Exception("TODO need to increment call num")
-            return call_num
+            print("trace of function "+str(function_ordinal)+"  call ("+str(call_num)+")/ call ignored due to needing breakpoint")
+            do_use_trace = False
     
     if jump_breakpoint is not None:
         jump_breakpoints.append((jump_breakpoint, jump_to_address))
@@ -1324,31 +1611,10 @@ def add_instruction_redirect(
         
         jump_table_address = new_instruction_address
         
-        enter_asm1 = strip_semicolon_comments("""
-        
-add r12, """+str(area_for_xsave64)+"""
+        enter_asm1 = strip_semicolon_comments(f"""
 
-;Save tracing
-mov r10, r12
-add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
-
-mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
-
-mov     byte ptr [r8], 1 ;type 1 is function entry (1 byte)
-mov     eax, dword ptr gs:[0x48]
-mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
-mov     dword ptr [r8 + 5],  """+str(function_ordinal)+""";Save function ordinal(4 bytes)
-rdtsc                 ; EDX:EAX = TSC
-shl     rdx, 32       ; move high half up
-or      rax, rdx      ; RAX = (EDX<<32) | EAX
-mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
-
-mov     qword ptr [r8 + 17], r15 ;save return address pointer/function entry rsp(8 bytes)
-mov     rcx, [r15]              ;
-mov     qword ptr [r8 + 25], rcx ;save return address (8 bytes) 
-lea     r8, [r8+33]
-mov [r10], r8
-
+mov rdx, {function_ordinal}
+call {add_entry_trace_address}
 
 
 """+("""
@@ -1411,16 +1677,18 @@ mov     [r10], r11
     
         enter_asm = enter_asm1
 
+        if forbid_all_tracing:
+            enter_func_call_code = b""
+        else:
+            enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm, save_full=False), jump_table_address)
         
-        enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm, save_full=False), jump_table_address)
-        #enter_func_call_code = b"" #asm("int3", jump_table_address) #Test with no tracing
         jump_write_address = jump_table_address + len(enter_func_call_code)
         
         
         #We redirect the return address to capture return, this is not invisible to the code so it may fail, if that is the case disable it
         #But that also means you wont be able to capture the return. You may be able to put breakpoints on all ret instructions but this will not catch tail calls.
         
-        
+
         function_caller_asm = [
             "push rax;" if redirect_return else "", # save value in rax
             "mov rax, [RIP + 20];" if redirect_return else "", # fill rax with addres leading to new_function_return_address
@@ -1428,33 +1696,17 @@ mov     [r10], r11
             "pop rax;" if redirect_return else "", # restore rax 
             "jmp [RIP];", # jump to new_function_start_address
         ]
+        
         function_caller_asm = "\n".join(function_caller_asm)
         
         function_caller = asm(function_caller_asm, jump_write_address)
         new_function_return_address = jump_write_address + len(function_caller)+16
         
         if redirect_return:
-            exit_asm1 = strip_semicolon_comments("""
-add r12, """+str(area_for_xsave64)+"""
-
-;Save tracing
-mov r10, r12
-add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
-
-mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
-
-mov     byte ptr [r8], 2 ;type 2 is function exit (1 byte)
-mov     eax, dword ptr gs:[0x48]
-mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
-mov     dword ptr [r8 + 5],  """+str(function_ordinal)+""";Save function ordinal(4 bytes)
-rdtsc                 ; EDX:EAX = TSC
-shl     rdx, 32       ; move high half up
-or      rax, rdx      ; RAX = (EDX<<32) | EAX
-mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
-mov     qword ptr [r8 + 17], r15 ;save return address pointer(8 bytes)
-
-lea     r8, [r8+25]
-mov [r10], r8
+            exit_asm1 = strip_semicolon_comments(f"""
+            
+mov rdx, {function_ordinal}
+call {add_exit_trace_address}
 
 
 ;Load return address from linked list
@@ -1522,7 +1774,7 @@ mov     [r15-100], rax
         #exit()
         code.append(jump_code)
         new_instruction_address += len(jump_code)
-        #process.write(jump_table_address, jump_code)
+
 
     for instruciton_dat in instructions:
         instruction_address = instruciton_dat[0]
@@ -1541,30 +1793,9 @@ mov     [r15-100], rax
         if instruction_parts[0] == "call":
             reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruciton_dat)
             
-            call_info = {
-                "address": instruction_address,
-                "return_address": instruction_address + instruction_len,
-                "asm": instruction_asm,
-                "indirect": indirect,
-            }
-            if (reg is None or (reg is not None and reg.lower() == "rip")) and offset is not None:
-                if not indirect:
-                    rip_to = offset
-                    call_info['target'] = rip_to
-                else:
-                    call_info['target_pointer'] = offset
-                    try:
-                        trg = read_ptr(process_handle, offset)
-                    except:
-                        trg = None
-                    call_info['target'] = trg
                     
         
-        if instruction_parts[0] == "call" and call_num not in excluded_calls and do_call_tracing:
-
-            
-            #jump_back_address = instruction_address + instruction_len
-
+        if instruction_parts[0] == "call" and call_num not in excluded_calls and doing_calls:
             
             
             #Make sure we are using a tempreg that is not used
@@ -1585,35 +1816,8 @@ mov     [r15-100], rax
             
             target_resolver = get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, reg_to_use)
             print("call info:", "nr:", call_num, "asm:", instruction_asm, "resolver:", target_resolver, "reg dat:", reg, reg2, reg2_mult, indirect, offset, reg_to_use, "new_addr:", new_instruction_address, "old_addr:", instruction_address)
-            #exit()
             
-            #DEBUG dfsdffdsfdds REMOVE WHEN DONE oct 7
-            if reg is None and offset is not None and False:
-                if indirect:
-                    dsg_asm = (
-                        f"call [{offset}]\n"
-                        f"jmp {instruction_address+instruction_len}\n"
-                    )
-                else:
-                    dsg_asm = (
-                        f"call {offset}\n"
-                        f"jmp {instruction_address+instruction_len}\n"
-                    )
-
-                    
-                #asms = asm(dsg_asm, new_instruction_address)
-                #inst = hook_lib.disasm(new_instruction_address, asms)
-                #disasem = inst[0][2]
-                
-                #lreg, lreg2, lreg2_mult, lindirect, loffset = asm2regaddr(inst[0])
-                #print("dbg:", instruction_asm, disasem, lreg, lreg2, lreg2_mult, lindirect, loffset)
-                
-                
-                dbg_call_code = asm(dsg_asm, new_instruction_address)
-        
-                
-                code.append(dbg_call_code)
-                new_instruction_address += len(dbg_call_code)
+            
             
             save_target_asm = (
                 f"mov [rsp-{rsp_ofset}], {reg_to_use} \n" #Save r9
@@ -1623,59 +1827,19 @@ mov     [r15-100], rax
             )
             
             
-            #call_asm = (
-            #    f"movabs     rcx, {function_ordinal};"    # first argument function_address
-            #    f"movabs     rdx, {instruction_address};"    # second argument call_address
-            #    f"movabs     r8, {instruction_address + instruction_len};"    # third arg return_address
-            #    f"mov     r9, [r15-8];"# forth arg target address # original rsp in rax, saved in r15 by generate_clean_asm_func_call the next value in the stack is filled in by save_target_asm which is what we reference here
-            #    f"movabs     rax, {call_tracer_dll_func['function_call_trace_point']};"
-            #)
-            #print(call_asm)
             
-            call_asm = strip_semicolon_comments("""
-add r12, """+str(area_for_xsave64)+"""
-
-;Save tracing
-mov r10, r12
-add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
-
-mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
-
-mov     byte ptr [r8], 3 ;type 3 is function call (1 byte)
-mov     eax, dword ptr gs:[0x48]
-mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
-mov     dword ptr [r8 + 5],  """+str(function_ordinal)+""";Save function ordinal(4 bytes)
-rdtsc                 ; EDX:EAX = TSC
-shl     rdx, 32       ; move high half up
-or      rax, rdx      ; RAX = (EDX<<32) | EAX
-mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
-
-mov     dword ptr [r8 + 17], """+str(call_num)+""" ;save call num (4 bytes)
-mov     rax, [r15-8] ;  arg target address # original rsp in rax, saved in r15 by save_target_asm
-mov     qword ptr [r8 + 21], rax ;save raget_address (8 bytes)
-lea     r8, [r8+29]
-mov [r10], r8
-
+            call_asm = strip_semicolon_comments(f"""
+mov rdx, {function_ordinal}
+mov rsi, {call_num}
+call {add_call_trace_address}
 
             """)
             
             
             
-            #asm(save_target_asm, new_instruction_address)
-            
-            
-            
-            #extra_pop = ""
-            #save_target_asm = ""
-            #call_asm = ""
-            #extra_push = 0
-            
-            #print("target_asm", save_target_asm)
-            #exit()
             
             call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm, save_full=False), new_instruction_address)
-            #call_func_call_code = b""
-            #exit()
+            
             
             code.append(call_func_call_code)
             new_instruction_address += len(call_func_call_code)
@@ -1754,10 +1918,10 @@ mov [r10], r8
         #elif instruction_parts[0] in ("cmp",):
         #    raise Exception("non-movable instruction (Should probably just remove this exception cmp is movable): "+ instruction_asm)
 
-        if instruction_parts[0] == "call":
+        if instruction_parts[0] == "call" and doing_calls:
             #We just filled rsp-8 with the target address
             
-            jump_diretly_back = False
+            jump_diretly_back = False ##only works if the call is the last moved instruction
             if jump_diretly_back:
                 call_asm = (
                     f"mov [rsp-{rsp_ofset}], rax\n" #save rax
@@ -1772,7 +1936,7 @@ mov [r10], r8
                 )
                 new_code = asm(call_asm, new_instruction_address)#Luckily this reads the target adress from [rsp-8] before it writes the return address to it
             else:
-                new_code = asm("call [rsp-8]", new_instruction_address)#Luckily this reads the target adress from [rsp-8] before it writes the return address to it
+                new_code = asm("call [rsp-8]", new_instruction_address)# this reads the target adress from [rsp-8] (where the call tracer placed it) before it writes the return address to it
                 
             code.append(new_code)
             new_instruction_address += len(new_code)
@@ -1868,29 +2032,13 @@ mov [r10], r8
         
         
         if instruction_parts[0] == "call":
-            if call_num not in excluded_calls and do_call_tracing and do_call_tracing:
+            if call_num not in excluded_calls and doing_calls:
                 
-                call_asm = strip_semicolon_comments("""
-                add r12, """+str(area_for_xsave64)+"""
-
-;Save tracing
-mov r10, r12
-add r10, """+str(area_for_function_table + area_for_return_addr_linked_list)+""" ; get memory area for tracing
-;int1 ;DEBUGBS 
-mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
-
-mov     byte ptr [r8], 4 ;type 4 is function called (1 byte)
-mov     eax, dword ptr gs:[0x48]
-mov     dword ptr [r8 + 1], eax ;save thread id (4 bytes)
-mov     dword ptr [r8 + 5],  """+str(function_ordinal)+""";Save function ordinal(4 bytes)
-rdtsc                 ; EDX:EAX = TSC
-shl     rdx, 32       ; move high half up
-or      rax, rdx      ; RAX = (EDX<<32) | EAX
-mov     qword ptr [r8 + 9], rax ;save timestamp (8 bytes)
-
-mov     dword ptr [r8 + 17], """+str(call_num)+""" ;save call num (4 bytes)
-lea     r8, [r8+21]
-mov [r10], r8
+                call_asm = strip_semicolon_comments(f"""
+                
+mov rdx, {function_ordinal}
+mov rsi, {call_num}
+call {add_called_trace_address}
 
                 """)
                 
@@ -1901,23 +2049,34 @@ mov [r10], r8
                 new_instruction_address += len(call_func_called_code)
                 
             
-            call_info['call_num'] = call_num
-            function_map['calls'].append(call_info)
+            
             call_num += 1
         
         moved_instructions[instruction_address] = (new_start_address, new_instruction_address)
         
     last_jump_asm = f"jmp [RIP]"
-    new_code = asm(last_jump_asm, new_instruction_address)+ struct.pack("<Q", jump_back_address)
+    
+    if rsp_return:
+        last_jump_asm =  f"jmp [rsp-{rsp_ofset-8}]\n"#jump to return address
+    
+    new_code = asm(last_jump_asm, new_instruction_address)
+    if not rsp_return:
+        new_code += struct.pack("<Q", jump_back_address)
+    
     code.append(new_code)
     new_instruction_address += len(new_code)
 
     shellcode = b"".join(code)
     shell_len = len(shellcode)
 
-    shell_code_address_offset += shell_len + 20
-    hook_lib.write(process_handle, jump_to_address, shellcode, do_checks = False)
-    jump_writes.append((insert_location, jmp_to_shellcode))
+    if do_use_trace:
+        ass = ""
+        for inst in instructions:
+            ass += str(inst[2]) + ";"
+        print("REPLACING:", len(instructions), ass)
+        shell_code_address_offset += shell_len + 20
+        hook_lib.write(process_handle, jump_to_address, shellcode, do_checks = False)
+        jump_writes.append((insert_location, jmp_to_shellcode))
     
 
     return call_num
@@ -1946,24 +2105,25 @@ def find_first_func(address):
     Returns the smallest such address, or None if none exist above the given address.
     """
     candidates = []
+    
+    first_func = pdata_index.find_first_func(address)
+    if first_func is not None:
+        candidates.append(first_func)
 
-    # Add all function start addresses
-    candidates.extend(f[0] for f in pdata_functions)
+    i = bisect.bisect_left(jumps_index, address)
+    if i != len(jumps_index):
+        candidates.append(jumps_index[i])
 
-    # Add all call and jump targets
-    candidates.extend(calls.keys())
-    candidates.extend(jumps.keys())
-
-    # Filter only addresses >= the given one
-    candidates = [a for a in candidates if a >= address]
-
-    if not candidates:
+    i = bisect.bisect_left(calls_index, address)
+    if i != len(calls_index):
+        candidates.append(calls_index[i])
+    
+    if len(candidates) == 0:
         return None
-
     return min(candidates)
 
 
-def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int, function_ordinal: int, do_init: bool, doing_calls: bool) -> None:
+def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str, str]], function_id: str, function_address: int, function_ordinal: int, do_init: bool, doing_calls: bool, prolog_size: int) -> None:
     """Insert breakpoints at every CALL within a function's instruction list."""
     global shell_code_address_offset
     
@@ -2023,12 +2183,19 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                 else:
                     do_relocation = True
                     use_instruction = False
+                    
+            if respect_prolog_size:
+                if prolog_size < init_free_space + instruction_len:
+                    
+                    if len(init_instructions) > 0:#If we dont have any prolog bytes we replace THE FIRST instruction anyway
+                        use_instruction = False
+                    do_relocation = True
             
             if use_instruction:
                 init_free_space += instruction_len
                 init_instructions.append(instruction)
             
-            if num_instructions-1 == instruction_num:#we are at the final instruction it is noew or never
+            if num_instructions-1 == instruction_num:#we are at the final instruction, it is now or never
                 do_relocation = True
             
             #do_relocation = True #If something jumps in to one of the first few instructions uncomment this
@@ -2040,6 +2207,9 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
             #if "rip" in instruction[2]:
             #    doing_init = False # Test without things that contain RIP
             
+            if only_replace_single_instruction_init:
+                if init_free_space > 0:#Issue here if the next instrcution is a call we could pick it up and stuff would be alot easier
+                    do_relocation = True
             
             
             #if instruction_name == "cmp":
@@ -2049,6 +2219,7 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                 do_relocation = True
             
             if do_relocation and doing_init:
+                
                 doing_init = False
                 print("relocating_init: ", init_instructions, "cur instruciton:", instruction[2])
                 call_num = add_instruction_redirect(
@@ -2058,13 +2229,13 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                     init_instructions,
                     process_handle,
                     call_num,
+                    doing_calls,
                 )
         else:
             call_replace_instructions.append(instruction)
-            if instruction_name == "call" and do_call_tracing:
+            if instruction_name == "call" and doing_calls:
                 search_call = True
         
-            
         if search_call and doing_calls:
             
             replace_instructions = []
@@ -2089,9 +2260,6 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                     break
             call_replace_instructions = []
             replace_instructions = list(reversed(replace_instructions))
-            #print("type: callback", instruction[2], instruction_address)
-            
-            #print(instruction)
             
             
             call_num = add_instruction_redirect(
@@ -2101,6 +2269,7 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                 replace_instructions,
                 process_handle,
                 call_num,
+                doing_calls
             )
              
 def find_moved_instruction(address):
@@ -2323,7 +2492,7 @@ def run_loadlibrary_in_process(h_process: int, dll_path: str) -> None:
     
     
 
-def on_calltrace_dll_ready(handle):
+def lookup_calltrace_exports(handle):
     global call_trace_dll_ready
     if call_trace_dll_ready:
         return
@@ -2351,7 +2520,7 @@ def on_calltrace_dll_ready(handle):
         
     else:
         raise Exception("dll has no exports")
-    setup_after_dll_loaded(handle)
+    
     
     
 
