@@ -150,13 +150,14 @@ forbid_break_point_jumps = False # if set to try break point jumps are not used 
 only_replace_single_instruction_init = False # Only replace the first instruciton in the function init
 only_allow_single_instruction_replacements = False # When tracing calls only allow one instruction replacement, leads to many uses of break point jumps whereever a 5 byte jump wont fit (breakpoint jumps are SLOW) ONLY applies to call replacements not INIT replacements.
 exclude_call_tracing_in_force_truncated_functions = True
-use_calls_for_patching = False #Replaces jumps with UNMOVABLE calls. NOT recomended as it is this is more or less a useless function that only clobers the stack.
+use_calls_for_patching = True #Replaces jumps with calls. Slower than jumps as the return address needs to be captured, saved then restored. Using a jump techic uses 2 instructions using calls uses about 150 instructions and multiple memmory writes and reads 
 redirect_return = False
 respect_prolog_size = False #If we wont replace any instructions after the said prolog size
-forbid_all_tracing = False #does not add any tracing code just injects. For use in testing when program craches
+forbid_entry_tracing = False #does not add any tracing code just injects. For use in testing when program craches
 trace_all_calls = True
 
-
+if forbid_entry_tracing and redirect_return:
+    raise ValueError("cant forbid forbid_entry_tracing when also redirecting return")
 
 call_exclusions = [
     #(2666, 0),
@@ -201,6 +202,7 @@ def start_or_attach(argv: List[str]) -> None:
     p.add_argument("executable", help="pid or executable")
     p.add_argument("--pause_on_load", action="store_true", help="Wait for the proces to start and load kernel32.dll then pauses it")
     p.add_argument("--only_analyse", action="store_true", help="Only does executable analysis")
+    p.add_argument("--exclude_addresses", default="utf-8", help="json file with function addresses to exclude")
     p.add_argument("--memory_scan", action="store_true", help="scans the executable periodicly for changes in executable code. Changes like hooks and unpacking.")
     args = p.parse_args()
     
@@ -276,24 +278,93 @@ def start_or_attach(argv: List[str]) -> None:
     
     get_pdata(executable_path, base_addr, exe_basic_name)
     
+    if args.exclude_addresses:
+        if os.path.exists(args.exclude_addresses):
+            with open(args.exclude_addresses, "r") as f:
+                loaded_json = json.load(f)
+                for index in loaded_json:
+                    func_addr = int(index)
+                    func = get_function_containing(func_addr)
+                    if func is None:
+                        print("no function at address:", func_addr)
+                    else:
+                        function_exclusions.append(func[3])
+    
     print("analyse_executable_code")
     
     if args.memory_scan:
         map_file = "output\\"+exe_basic_name+'_map.json'
+        
+        
         if not os.path.exists(map_file):
             raise Exception("no function map found, run with --only_analyse first (wait for unpacking first if executable does unpacking)")
-        
         with open(map_file, "r") as f:
             call_map = json.load(f)
         
+        function_data_cache_file = "cache\\" + exe_basic_name + "_function_data_cache.json"
+        if not os.path.exists(function_data_cache_file):
+            raise Exception("no original function data found, run with --only_analyse first (wait for unpacking first if executable does unpacking)")
+        with open(function_data_cache_file, "r") as f:
+            loaded_json = json.load(f)
+            for index in loaded_json:
+                function_data[int(index)] = bytes.fromhex(loaded_json[index])
+        
+        if suspended:
+            print("resuming process")
+            hook_lib.NtResumeProcess(handle)
+            suspended = False
+        
+        last_func_data = []
+        for function in call_map:
+            if function['unlisted']:
+                continue
+            last_func_data.append(function_data[function['function_start_addr']])
+        
+        
+        chnages_file = "output\\"+exe_basic_name+'_changed_functions.json'
+        changes = {}
+        
+        if os.path.exists(chnages_file):
+            with open(chnages_file, "r") as f:
+                loaded_json = json.load(f)
+                for index in loaded_json:
+                    changes[int(index)] = loaded_json[index]
+        
         process_is_still_running = True
+        nr_of_checks = 0
         while process_is_still_running:
-            print("read and compare memmory")
+            #hook_lib.NtSuspendProcess(handle)
             
-            time.sleep(1.0)
+            i = 0
+            for function in call_map:
+                if function['unlisted']:
+                    continue
+                #print(function)
+                func_len = function['function_end_addr'] - function['function_start_addr']
+                data = hook_lib.read(handle, function['function_start_addr'], func_len)
+                if data != last_func_data[i]:
+                    if function['ordinal'] not in changes:
+                        changes[function['ordinal']] = 0
+                        
+                    
+                    changes[function['ordinal']] += 1
+                    print("function: " + function['function_id'] + " has changed:", changes[function['ordinal']])
+                    last_func_data[i] = data
+                
+                i += 1
+            
+            #hook_lib.NtResumeProcess(handle)
+            print("all functions checked", nr_of_checks)
+            nr_of_checks += 1
+            
+            with open(chnages_file, "w") as f:
+                json.dump(changes, f, indent=2)
+            
+            time.sleep(30.0)
     else:
         analyse_executable_code(handle)
-    if not args.only_analyse or not args.memory_scan:
+    
+    if not args.only_analyse and not args.memory_scan:
         allocate_mem_and_inject_dll(handle, exe_entry_address)
         
         lookup_calltrace_exports(handle)
@@ -308,7 +379,7 @@ def start_or_attach(argv: List[str]) -> None:
         hook_lib.NtResumeProcess(handle)
         suspended = False
     
-    if not args.only_analyse or not args.memory_scan:
+    if not args.only_analyse and not args.memory_scan:
         with open(assembled_cache_file, "w") as f:
             for key in asembly_cache:
                 asembly_cache[key] = asembly_cache[key].hex()
@@ -454,7 +525,7 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
     
     
 def inject_trace_injection_functions(process_handle):
-    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages, debug_func_address, add_entry_trace_address, add_called_trace_address, add_call_trace_address, add_exit_trace_address
+    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages, debug_func_address, add_entry_trace_address, add_called_trace_address, add_call_trace_address, add_exit_trace_address, push_value_from_linkedlist_address, pop_value_from_linkedlist_address, pop_value_with_sameRSP_from_linkedlist_address
     
     
     print("Set set_area_for_function_table")
@@ -988,6 +1059,122 @@ mov [r10], r8
 ret"""), add_called_trace_address)
     shell_code_address += len(add_called_trace_code)
     hook_lib.write(process_handle, add_called_trace_address, add_called_trace_code, do_checks = False)
+    
+    
+    push_value_from_linkedlist_address = shell_code_address
+    push_value_from_linkedlist_code = asm(strip_semicolon_comments(
+f"""
+
+mov rcx, r12
+add rcx, {area_for_function_table} ; load address pointing to the top alocation in area_for_function_table
+
+; Get top allocation and top entry
+mov    rax, [r10]          ; rax = current_top_node_addr
+mov   r8,  [rcx]          ; r8  = current_top_alocated_addr
+
+test rax,rax
+jnz .list_exists
+;We dont have a list for this function we alocate a new one (The first node in the list will always be empty)
+lea     r8, [r8+32]
+mov     [rcx], r8
+mov     rax, r8
+
+.list_exists:
+
+;See if next node is not allocated yet
+mov   r11, [rax + 24]         ; r11 = node.next
+test    r11, r11
+jnz      .fill_new_entry
+
+;Setup new entry at new location
+;Alloc
+lea     r11, [r8 + 32]
+mov     [rcx], r11
+
+;Set next value on old entry
+mov [rax + 24], r11 ; node.next = r11
+
+;Set previous value on new entry
+mov   [r11 + 0], rax          ; newnode.previous = last_node
+mov   qword ptr  [r11 + 24], 0 ; newnode.next = 0 
+
+
+
+;Fill in value of entry
+.fill_new_entry:
+mov     [r11 + 8], rdx          ; newnode.value = value
+mov     [r11 + 16], r15          ; newnode.value2 = value
+
+;Save current_top_node_addr
+mov     [r10], r11
+
+
+ret"""), push_value_from_linkedlist_address)
+    shell_code_address += len(push_value_from_linkedlist_code)
+    hook_lib.write(process_handle, push_value_from_linkedlist_address, push_value_from_linkedlist_code, do_checks = False)
+    
+    pop_value_with_sameRSP_from_linkedlist_address = shell_code_address
+    pop_value_with_sameRSP_from_linkedlist_code = asm(strip_semicolon_comments("""
+
+mov     r11, qword ptr [r12]       ; r11 = current top node
+
+.loop:
+    test    r11, r11
+    jz      .pop_empty                  ; empty -> return 0
+
+    mov     rdx, qword ptr [r11 + 16]   ; rdx = node->value2
+    cmp     rdx, r15
+    je      .match
+
+    ; Not a match: pop and continue
+    mov     r11, qword ptr [r11 + 0]    ; r11 = node->prev
+    mov     qword ptr [r12], r11        ; update top
+    jmp     .loop
+
+.match:
+    mov     rax, qword ptr [r11 + 8]    ; rax = node->value
+    mov     r11, qword ptr [r11 + 0]    ; r11 = node->prev
+    mov     qword ptr [r12], r11        ; update top
+    jmp     .pop_done
+
+.pop_empty:
+    xor     rax, rax                    ; rax = 0
+    int3 ; indication that something has gone teribly wrong
+
+.pop_done:
+
+
+mov     [r15-100], rax
+ret"""), pop_value_with_sameRSP_from_linkedlist_address)
+    shell_code_address += len(pop_value_with_sameRSP_from_linkedlist_code)
+    hook_lib.write(process_handle, pop_value_with_sameRSP_from_linkedlist_address, pop_value_with_sameRSP_from_linkedlist_code, do_checks = False)
+    
+    pop_value_from_linkedlist_address = shell_code_address
+    pop_value_from_linkedlist_code = asm(strip_semicolon_comments("""
+
+mov     r11, qword ptr [r12]       ; r11 = current top node
+
+    test    r11, r11
+    jz      .pop_empty                  ; empty -> return 0
+
+
+    mov     rax, qword ptr [r11 + 8]    ; rax = node->value
+    mov     r11, qword ptr [r11 + 0]    ; r11 = node->prev
+    mov     qword ptr [r12], r11        ; update top
+    jmp     .pop_done
+
+.pop_empty:
+    xor     rax, rax                    ; rax = 0
+    int3 ; indication that something has gone teribly wrong
+
+.pop_done:
+
+
+mov     [r15-100], rax
+ret"""), pop_value_from_linkedlist_address)
+    shell_code_address += len(pop_value_from_linkedlist_code)
+    hook_lib.write(process_handle, pop_value_from_linkedlist_address, pop_value_from_linkedlist_code, do_checks = False)
+    
     
     print("setting up thread storage")
     
@@ -1551,6 +1738,8 @@ def add_instruction_redirect(
     asmm: Optional[str] = None
     jump_breakpoint = None
     rsp_return = False
+    save_call_jump_ret = ""
+    restore_call_jump_ret = ""
     if jump_type == "normal":
         to_address = jump_to_address
         if closer_alocation:
@@ -1569,14 +1758,25 @@ def add_instruction_redirect(
             #    "pop rax\n"
             #    "lea rsp, [rsp+8]\n"
             #)
+            save_call_jump_ret = "lea rsp, [rsp-8]\n" + generate_clean_asm_func_call(strip_semicolon_comments(f"""
+            add r12, {area_for_xsave64}
+            mov r10, r12
+add r10, {function_ordinal*8} ; This fucntion top
+mov  rdx, [r15] ; New Value (the return address saved in r15 by generate_clean_asm_func_call)
+call {push_value_from_linkedlist_address}
+            """))+"\nlea rsp, [rsp+8]\n"
+            
+            restore_call_jump_ret = generate_clean_asm_func_call(strip_semicolon_comments(f"""
+            add r12, {area_for_xsave64}
+
+add r12, {function_ordinal*8}
+call {pop_value_from_linkedlist_address} ;places poped value at address r15-100 which is the same as rsp-100 outside of generate_clean_asm_func_call
+            """))+"\njmp [rsp-100]\n"
             
             save_ret = "lea rsp, [rsp+8]\n"
             code_a = asm(save_ret, new_instruction_address)
             code.append(code_a)
             new_instruction_address += len(code_a)
-            if redirect_return:
-                raise Exception("redirect_return will overwrite stuff in the stack when using use_calls_for_patching needs fixing")
-                #Fix by moving the return addres upp to the stack ofset (-128) in the stack on entry
             
         jmp_to_shellcode = asm(asmm, insert_location)
     elif jump_type == "2byte":
@@ -1617,70 +1817,28 @@ mov rdx, {function_ordinal}
 call {add_entry_trace_address}
 
 
-"""+("""
+"""+(f"""
 
 ;Save return addres to linked list for later retrival on function exit
 ; This linked list can run out of memmory then it will crash TODO think about adding a check for this
 mov r10, r12
-mov rcx, r12
-
-add r10, """+str(function_ordinal*8)+""" ; This fucntion top
-add rcx, """+str(area_for_function_table)+""" ; Alocation top
-
-
+add r10, {function_ordinal*8} ; This fucntion top
 mov  rdx, [r15] ; New Value (the return address saved in r15 by generate_clean_asm_func_call)
+call {push_value_from_linkedlist_address}
 
-
-; Get top allocation and top entry
-mov    rax, [r10]          ; rax = current_top_node_addr
-mov   r8,  [rcx]          ; r8  = current_top_alocated_addr
-
-test rax,rax
-jnz .list_exists
-;We dont have a list for this function we alocate a new one (The first node in the list will always be empty)
-lea     r8, [r8+32]
-mov     [rcx], r8
-mov     rax, r8
-
-.list_exists:
-
-;See if next node is not allocated yet
-mov   r11, [rax + 24]         ; r11 = node.next
-test    r11, r11
-jnz      .fill_new_entry
-
-;Setup new entry at new location
-;Alloc
-lea     r11, [r8 + 32]
-mov     [rcx], r11
-
-;Set next value on old entry
-mov [rax + 24], r11 ; node.next = r11
-
-;Set previous value on new entry
-mov   [r11 + 0], rax          ; newnode.previous = last_node
-mov   qword ptr  [r11 + 24], 0 ; newnode.next = 0 
-
-
-
-;Fill in value of entry
-.fill_new_entry:
-mov     [r11 + 8], rdx          ; newnode.value = value
-mov     [r11 + 16], r15          ; newnode.value2 = value
-
-;Save current_top_node_addr
-mov     [r10], r11
-
-    """ if redirect_return else ""))
+""" if redirect_return else ""))
     
         #lol = asm(enter_asm1, jump_table_address)
     
         enter_asm = enter_asm1
 
-        if forbid_all_tracing:
-            enter_func_call_code = b""
+        if forbid_entry_tracing:
+            if save_call_jump_ret != "":
+                enter_func_call_code = asm(save_call_jump_ret, jump_table_address)
+            else:
+                enter_func_call_code = b""
         else:
-            enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm, save_full=False), jump_table_address)
+            enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm)+"\n"+save_call_jump_ret, jump_table_address)
         
         jump_write_address = jump_table_address + len(enter_func_call_code)
         
@@ -1710,53 +1868,17 @@ call {add_exit_trace_address}
 
 
 ;Load return address from linked list
+add r12, {function_ordinal*8}
+call {pop_value_with_sameRSP_from_linkedlist_address} #places poped value at address r15-100
 
-
-add r12, """+str(function_ordinal*8)+"""
-
-
-
-mov     r11, qword ptr [r12]       ; r11 = current top node
-
-.loop:
-    test    r11, r11
-    jz      .pop_empty                  ; empty -> return 0
-
-    mov     rdx, qword ptr [r11 + 16]   ; rdx = node->value2
-    cmp     rdx, r15
-    je      .match
-
-    ; Not a match: pop and continue
-    mov     r11, qword ptr [r11 + 0]    ; r11 = node->prev
-    mov     qword ptr [r12], r11        ; update top
-    jmp     .loop
-
-.match:
-    mov     rax, qword ptr [r11 + 8]    ; rax = node->value
-    mov     r11, qword ptr [r11 + 0]    ; r11 = node->prev
-    mov     qword ptr [r12], r11        ; update top
-    jmp     .pop_done
-
-.pop_empty:
-    xor     rax, rax                    ; rax = 0
-    int3 ; indication that something has gone teribly wrong
-
-.pop_done:
-
-
-mov     [r15-100], rax
-
-
-
-
-        """)
+""")
         
             exit_asm = exit_asm1
             
-            exit_func_call_code = asm("lea rsp, [rsp-8];"+generate_clean_asm_func_call(exit_asm, save_full=False), new_function_return_address)#We have just returned from a call so t onot clober the old return address that was just popped we decrement rsp by 8 before 
+            exit_func_call_code = asm("lea rsp, [rsp-8];"+generate_clean_asm_func_call(exit_asm), new_function_return_address)#We have just returned from a call so t onot clober the old return address that was just popped we decrement rsp by 8 before 
             final_jump_code = asm("lea rsp, [rsp+8];jmp [rsp-108]", new_function_return_address + len(exit_func_call_code))#Then we incremet by 8 after
             
-            #exit_func_call_code = asm("lea rsp, [rsp-140];"+generate_clean_asm_func_call(exit_asm, extra_push=132, save_full=False), jump_table_address)#
+            #exit_func_call_code = asm("lea rsp, [rsp-140];"+generate_clean_asm_func_call(exit_asm, extra_push=132), jump_table_address)#
             #final_jump_code = asm("lea rsp, [rsp+140];jmp [rsp-108]", jump_table_address + len(exit_func_call_code))#"ret"
         else:
            exit_func_call_code = b""
@@ -1774,6 +1896,12 @@ mov     [r15-100], rax
         #exit()
         code.append(jump_code)
         new_instruction_address += len(jump_code)
+    else:
+        #for call capturing
+        if save_call_jump_ret != "":
+            save_retaddres_code = asm(save_call_jump_ret, new_instruction_address)
+            code.append(save_retaddres_code)
+            new_instruction_address += len(save_retaddres_code)
 
 
     for instruciton_dat in instructions:
@@ -1838,7 +1966,7 @@ call {add_call_trace_address}
             
             
             
-            call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm, save_full=False), new_instruction_address)
+            call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm), new_instruction_address)
             
             
             code.append(call_func_call_code)
@@ -2042,7 +2170,7 @@ call {add_called_trace_address}
 
                 """)
                 
-                call_func_called_code = asm(generate_clean_asm_func_call(call_asm, save_full=False), new_instruction_address)
+                call_func_called_code = asm(generate_clean_asm_func_call(call_asm), new_instruction_address)
                 #call_func_called_code = b""
                 
                 code.append(call_func_called_code)
@@ -2056,11 +2184,11 @@ call {add_called_trace_address}
         
     last_jump_asm = f"jmp [RIP]"
     
-    if rsp_return:
-        last_jump_asm =  f"jmp [rsp-{rsp_ofset-8}]\n"#jump to return address
+    if restore_call_jump_ret != "":
+        last_jump_asm =  restore_call_jump_ret#jump to return address
     
     new_code = asm(last_jump_asm, new_instruction_address)
-    if not rsp_return:
+    if restore_call_jump_ret == "":
         new_code += struct.pack("<Q", jump_back_address)
     
     code.append(new_code)
@@ -2461,20 +2589,18 @@ def strip_semicolon_comments(asm: str) -> str:
     # preserves newlines, removes ';' comments + space before them
     return _strip_semicolon_comments.sub('', asm)
     
-def generate_clean_asm_func_call(code, in_two_parts = False, debug = False, save_full=True):
+def generate_clean_asm_func_call(code, in_two_parts = False, debug = False):
     global register_save_address, thread_storage_list_address
     
-    if save_full:
-        raise Exception("save_full not supported any longer")
     
     
-    if not save_full:
-        assembly1 = f"\nlea rsp, [rsp-{rsp_ofset}]\ncall " + str(save_state_address) + "\n\n" + code.replace(";", "\n") +"\n"
+    
+    assembly1 = f"\nlea rsp, [rsp-{rsp_ofset}]\ncall " + str(save_state_address) + "\n\n" + code.replace(";", "\n") +"\n"
     if debug:
         assembly1 = f"\nlea rsp, [rsp-{rsp_ofset}]\ncall " + str(debug_func_address) + "\n\n" + code.replace(";", "\n") +"\n"
     
-    if not save_full:
-        assembly2 = "call " + str(restore_state_address) + "\n"
+    
+    assembly2 = "call " + str(restore_state_address) + "\n"
     if in_two_parts:
         return assembly1, assembly2
     return assembly1 + assembly2
