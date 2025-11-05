@@ -295,6 +295,30 @@ def print_modules(mods):
         size = str(m.get("size")) if m.get("size") else "N/A"
         print(f"{base:>18}  {size:>8}  {m['path']}")
     print("")
+    
+    
+def get_remote_function(hProc, module_name, func_name):
+    # Determine remote address of LoadLibraryA via RVA method:
+    # local kernel32 base and local LoadLibraryA address
+    local_k32 = ctypes.WinDLL(module_name, use_last_error=True)
+    local_k32_handle = local_k32._handle
+    local_loadlib = kernel32.GetProcAddress(local_k32_handle, func_name.encode('utf-8'))
+    if not local_loadlib:
+        raise OSError("GetProcAddress("+func_name+") failed locally")
+
+    local_rva = int(local_loadlib) - int(local_k32_handle)
+
+    # find remote kernel32 base via enumerate_modules
+    remote_k32_base = None
+    mods = enumerate_modules(hProc, base_name = True)
+    if "kernel32.dll" in mods:
+        remote_k32_base = mods[module_name+".dll"]["base"]
+
+    if not remote_k32_base:
+        raise OSError("Failed to locate kernel32/kernelbase base in target process")
+
+    remote_loadlib = int(remote_k32_base) + int(local_rva)
+    return remote_loadlib
 
 def load_library_in_remote(hProc, dll_path: str, wait: bool = True):
     """
@@ -312,36 +336,13 @@ def load_library_in_remote(hProc, dll_path: str, wait: bool = True):
         remote_str = VirtualAllocEx(hProc, None, len(dll_bytes), MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE)
         if not remote_str:
             raise OSError(f"VirtualAllocEx(dllpath) failed: {ctypes.get_last_error()}")
-        print(remote_str)
+        
         written = ctypes.c_size_t()
         ok = WriteProcessMemory(hProc, remote_str, dll_bytes, len(dll_bytes), ctypes.byref(written))
         if not ok or written.value != len(dll_bytes):
             raise OSError(f"WriteProcessMemory(dllpath) failed: {ctypes.get_last_error()} wrote={getattr(written,'value',None)}")
-
-        # Determine remote address of LoadLibraryA via RVA method:
-        # local kernel32 base and local LoadLibraryA address
-        local_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        local_k32_handle = local_k32._handle
-        local_loadlib = kernel32.GetProcAddress(local_k32_handle, b"LoadLibraryA")
-        if not local_loadlib:
-            raise OSError("GetProcAddress(LoadLibraryA) failed locally")
-
-        local_rva = int(local_loadlib) - int(local_k32_handle)
-
-        # find remote kernel32 base via enumerate_modules
-        remote_k32_base = None
-        mods = enumerate_modules(hProc, base_name = True)
-        if "kernel32.dll" in mods:
-            remote_k32_base = mods["kernel32.dll"]["base"]
-        #elif "kernelbase.dll" in mods:
-        #    # sometimes kernelbase.dll implements LoadLibrary; also check kernelbase.dll
-        #    remote_k32_base = mods["kernelbase.dll"]["base"]
-
-        if not remote_k32_base:
-            raise OSError("Failed to locate kernel32/kernelbase base in target process")
-
-        remote_loadlib = int(remote_k32_base) + int(local_rva)
-
+        
+        remote_loadlib = get_remote_function(hProc, "kernel32", "LoadLibraryA")
         # create thread to call LoadLibraryA(remote_str)
         hThread = CreateRemoteThread(hProc, 0, 0, remote_loadlib, remote_str, 0, None)
         if not hThread:
@@ -350,8 +351,8 @@ def load_library_in_remote(hProc, dll_path: str, wait: bool = True):
         if wait:
             WaitForSingleObject(hThread, INFINITE)
             # optionally can read exit code but it's 32-bit only
-            exit_code = wintypes.DWORD()
-            GetExitCodeThread(hThread, ctypes.byref(exit_code))
+            #exit_code = wintypes.DWORD()
+            #GetExitCodeThread(hThread, ctypes.byref(exit_code))
             
         return
 

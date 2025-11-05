@@ -10,12 +10,28 @@
 #include <atomic>
 #include <mutex>
 #include <shared_mutex>
+#include <sstream>
+#include <iomanip>
+
+extern "C" {
+#include "include/libipt.h" // <<-- from WinIPT
+}
+#include <tlhelp32.h>
+
+struct SuspendedThread {
+    HANDLE hThread;
+    DWORD  threadId;
+    DWORD  prevSuspendCount; // from SuspendThread
+};
+
+#pragma comment(lib, "libipt.lib") // link against WinIPT static lib (or add to project settings)
 
 extern "C" {
     __declspec(dllexport) void print_to_file(const char* str);
     __declspec(dllexport) void print_text();
     __declspec(dllexport) uint64_t alloc_thread_storage(uint64_t out_address);
     __declspec(dllexport) uint64_t set_area_for_function_table(uint64_t size);
+    __declspec(dllexport) uint64_t set_thread_list_table_addres(uint64_t addr);
     __declspec(dllexport) uint64_t dump_trace(uint64_t thread_storage_address);
     __declspec(dllexport) uint64_t dump_all_traces();
     __declspec(dllexport) uint64_t set_output_file(char* file_path);
@@ -24,8 +40,10 @@ extern "C" {
 
 uint64_t area_for_xsave64 = 12228;
 uint64_t area_for_function_table = 0;
+uint64_t thread_list_table_addres = 0;
 uint64_t area_for_return_addr_linked_list = 3 * 8 * 100000;
 uint64_t area_for_tracing_results = 8 * 10000000;
+uint64_t max_thread_ids = 30000;
 
 constexpr uint32_t kMaxAllocations = 65536;     // tune as you like
 
@@ -35,6 +53,61 @@ alignas(64) static uint64_t g_allocations[kMaxAllocations] = { 0 };
 static std::atomic<uint32_t> g_alloc_count{ 0 };
 
 std::string output_buffer_str = "";
+
+HANDLE current_process;
+
+
+
+static std::vector<SuspendedThread> g_suspended_threads;
+
+static std::vector<SuspendedThread> suspend_all_other_threads(DWORD selfTid)
+{
+    std::vector<SuspendedThread> suspended;
+
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return suspended;
+
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+
+    if (Thread32First(hSnap, &te)) {
+        DWORD myPid = GetCurrentProcessId();
+        do {
+            if (te.th32OwnerProcessID != myPid) continue;
+            if (te.th32ThreadID == selfTid)     continue;
+
+            HANDLE ht = OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+            if (!ht) continue;
+
+            DWORD prev = SuspendThread(ht);
+            if (prev == (DWORD)-1) {
+                CloseHandle(ht);
+                continue;
+            }
+
+            suspended.push_back({ ht, te.th32ThreadID, prev });
+        } while (Thread32Next(hSnap, &te));
+    }
+
+    CloseHandle(hSnap);
+    return suspended;
+}
+
+static void resume_threads(std::vector<SuspendedThread>& threads)
+{
+    for (auto& t : threads) {
+        if (!t.hThread) continue;
+        // Resume until the count reaches 0
+        for (;;) {
+            DWORD prev = ResumeThread(t.hThread);
+            if (prev == (DWORD)-1) break;
+            if (prev <= 1) break; // now running
+        }
+        CloseHandle(t.hThread);
+        t.hThread = nullptr;
+    }
+    threads.clear();
+}
 
 void bufer_2_file() {
 
@@ -50,9 +123,340 @@ void print(std::string str) {
     }
 }
 
+BOOL
+EnableIpt(
+    VOID
+)
+{
+    SC_HANDLE hScm, hSc;
+    BOOL bRes;
+    bRes = FALSE;
+
+    //
+    // Open a handle to the SCM
+    //
+    hScm = OpenSCManager(NULL, NULL, SC_MANAGER_CONNECT);
+    if (hScm != NULL)
+    {
+        //
+        // Open a handle to the IPT Service
+        //
+        hSc = OpenService(hScm, L"Ipt", SERVICE_START);
+        if (hSc != NULL)
+        {
+            //
+            // Start it
+            //
+            bRes = StartService(hSc, 0, NULL);
+            if ((bRes == FALSE) &&
+                (GetLastError() == ERROR_SERVICE_ALREADY_RUNNING))
+            {
+                //
+                // If it's already started, that's OK
+                //
+                bRes = TRUE;
+            }
+            else if (bRes == FALSE)
+            {
+                wprintf(L"[-] Unable to start IPT Service (err=%d)\n",
+                    GetLastError());
+                if (GetLastError() == ERROR_NOT_SUPPORTED)
+                {
+                    wprintf(L"[-] This is likely due to missing PT support\n");
+                }
+            }
+
+            //
+            // Done with the service
+            //
+            CloseServiceHandle(hSc);
+        }
+        else
+        {
+            wprintf(L"[-] Unable to open IPT Service (err=%d). "
+                L"Are you running Windows 10 1809?\n",
+                GetLastError());
+        }
+
+        //
+        // Done with the SCM
+        //
+        CloseServiceHandle(hScm);
+    }
+    else
+    {
+        wprintf(L"[-] Unable to open a handle to the SCM (err=%d)\n",
+            GetLastError());
+    }
+
+    //
+    // Return the result
+    //
+    return bRes;
+}
+
+BOOL
+EnableAndValidateIptServices(
+    VOID
+)
+{
+    WORD wTraceVersion;
+    DWORD dwBufferVersion;
+    BOOL bRes;
+
+    //
+    // First enable IPT
+    //
+    bRes = EnableIpt();
+    if (bRes == FALSE)
+    {
+        wprintf(L"[-] Intel PT Service could not be started!\n");
+        goto Cleanup;
+    }
+
+    //
+    // Next, check if the driver uses a dialect we understand
+    //
+    bRes = GetIptBufferVersion(&dwBufferVersion);
+    if (bRes == FALSE)
+    {
+        wprintf(L"[-] Failed to communicate with IPT Service: (err=%d)\n",
+            GetLastError());
+        goto Cleanup;
+    }
+    if (dwBufferVersion != IPT_BUFFER_MAJOR_VERSION_CURRENT)
+    {
+        wprintf(L"[-] IPT Service buffer version is not supported: %d\n",
+            dwBufferVersion);
+        goto Cleanup;
+    }
+
+    //
+    // Then, check if the driver uses trace versions we speak
+    //
+    bRes = GetIptTraceVersion(&wTraceVersion);
+    if (bRes == FALSE)
+    {
+        wprintf(L"[-] Failed to get Trace Version from IPT Service (err=%d)\n",
+            GetLastError());
+        goto Cleanup;
+    }
+    if (wTraceVersion != IPT_TRACE_VERSION_CURRENT)
+    {
+        wprintf(L"[-] IPT Service trace version is not supported %d\n",
+            wTraceVersion);
+        goto Cleanup;
+    }
+
+Cleanup:
+    //
+    // Return result
+    //
+    return bRes;
+}
+
+// WinIPT / libipt integration state
+static std::atomic_bool gIptTracingEnabled{ false };
+
+HANDLE gIptProcHandle = NULL;
+IPT_OPTIONS opts = {};
+
+static void ipt_start() {
+    // Build IPT options
+
+    BOOL ok = StartProcessIptTracing(gIptProcHandle, opts);
+    if (ok) {
+        gIptTracingEnabled.store(true);
+    }
+    else {
+        DWORD err = GetLastError();
+        print(std::string("ipt: StartProcessIptTracing failed err=") + std::to_string(err));
+    }
+}
+
+// Start process IPT tracing (call at DLL attach)
+static void ipt_start_for_process()
+{
+
+    if (!EnableAndValidateIptServices()) {
+        print("ipt: EnableAndValidateIptServices failed, skipping IPT tracing");
+        bufer_2_file();
+        return;
+	}
+
+    if (!gIptProcHandle) {
+        // Match the tool: PROCESS_VM_READ is enough; add QUERY just in case.
+        gIptProcHandle = OpenProcess(PROCESS_VM_READ | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId());
+        if (!gIptProcHandle) { print("ipt: OpenProcess failed"); bufer_2_file(); return; }
+    }
+
+    opts.OptionVersion = IPT_BUFFER_MAJOR_VERSION_V1;
+    opts.TimingSettings = IptNoTimingPackets; // (use this once everything works)
+    opts.CycThreshold = 0;
+    // Topa: choose with power-of-two like the tool; 11 seamed big trying 10.
+    opts.TopaPagesPow2 = 10;
+    opts.MatchSettings = IptMatchByAnyApp;
+    opts.Inherit = 1;
+    opts.ModeSettings = IptCtlUserModeOnly;
+
+
+    ipt_start();
+
+    
+    bufer_2_file();
+}
+
+uint8_t* last_buffer = nullptr;
+DWORD last_buffer_size = 0;
+
+static void ipt_clear(){
+    if (!gIptTracingEnabled.load()) {
+        return;
+    }
+
+    DWORD traceSize = 0, lastErr = 0;
+    if (!GetProcessIptTraceSize(current_process, &traceSize)) {
+        DWORD e = GetLastError();
+        print(std::string("ipt: GetProcessIptTraceSize failed err=") + std::to_string(e));
+        return;
+	}
+    
+    if (traceSize > 8000 * 1024 * 1024) {
+		//trace size too big saving it
+	
+
+        if (last_buffer) {
+            HeapFree(GetProcessHeap(), 0, last_buffer);
+	    }
+
+        // Allocate buffer for trace
+		last_buffer_size = traceSize;
+        last_buffer = reinterpret_cast<uint8_t*>(HeapAlloc(GetProcessHeap(), 0, traceSize));
+        if (!last_buffer) {
+            print("ipt: HeapAlloc failed for trace buffer");
+            bufer_2_file();
+            return;
+        }
+
+        // Get the trace into our buffer
+        BOOL rcGet = GetProcessIptTrace(current_process, last_buffer, traceSize);
+        if (!rcGet) {
+            DWORD e = GetLastError();
+            print(std::string("ipt: GetProcessIptTrace failed err=") + std::to_string(e));
+            //HeapFree(GetProcessHeap(), 0, current_buffer);
+            bufer_2_file();
+            return;
+        }
+
+        //Restart tracing right to clear the kernel buffer
+        StopProcessIptTracing(current_process);
+        ipt_start();
+    }
+
+	
+
+}
+
+static void ipt_stop()
+{
+    if (!gIptTracingEnabled.load()) {
+        print("ipt: tracing not enabled, skipping ipt_stop_and_dump_to_file");
+        bufer_2_file();
+        return;
+    }
+
+    HANDLE hThread = GetCurrentThread();
+    // Pause the crashing thread’s IPT stream.
+    BOOLEAN paused = FALSE;
+    
+    if (!PauseThreadIptTracing(hThread, &paused)) {
+        DWORD e = GetLastError();
+        print(std::string("ipt: PauseThreadIptTracing failed err=") + std::to_string(e));
+    }
+    if (last_buffer) {
+        FILE* fp = nullptr;
+        fopen_s(&fp, "C:\\dbg\\intel_pt_trace_last_trace.tpp", "wb");
+        if (fp) { fwrite(last_buffer, 1, last_buffer_size, fp); fclose(fp); print("ipt: wrote thread trace"); }
+        else { print(std::string("ipt: fopen failed: ")); }
+    }
+
+    // Query the trace size
+    DWORD traceSize = 0, lastErr = 0;
+    for (int i = 0; i < 50; ++i) {
+        if (GetProcessIptTraceSize(current_process, &traceSize) && traceSize) break;
+        lastErr = GetLastError();
+        Sleep(5);
+    }
+    if (!traceSize) {
+        print(std::string("ipt: GetProcessIptTraceSize failed or zero size, rc=") + std::to_string(traceSize) + " err=" + std::to_string(lastErr));
+        bufer_2_file();
+        // Attempt to resume tracing if desired
+        gIptTracingEnabled.store(false);
+        return;
+    }
+
+    print(std::string("ipt: trace size bytes=") + std::to_string(traceSize));
+    bufer_2_file();
+
+    // Allocate buffer for trace
+    uint8_t* buffer = reinterpret_cast<uint8_t*>(HeapAlloc(GetProcessHeap(), 0, traceSize));
+    if (!buffer) {
+        print("ipt: HeapAlloc failed for trace buffer");
+        bufer_2_file();
+        gIptTracingEnabled.store(false);
+        return;
+    }
+
+    // Get the trace into our buffer
+    BOOL rcGet = GetProcessIptTrace(current_process, buffer, traceSize);
+    if (!rcGet) {
+        DWORD e = GetLastError();
+        print(std::string("ipt: GetProcessIptTrace failed err=") + std::to_string(e));
+        HeapFree(GetProcessHeap(), 0, buffer);
+        bufer_2_file();
+        gIptTracingEnabled.store(false);
+        return;
+    }
+    {
+        FILE* fp = nullptr;
+        fopen_s(&fp, "C:\\dbg\\intel_pt_trace.tpp", "wb");
+        if (fp) { fwrite(buffer, 1, traceSize, fp); fclose(fp); print("ipt: wrote thread trace"); }
+        else { print(std::string("ipt: fopen failed: ")); }
+    }
+    HeapFree(GetProcessHeap(), 0, buffer);
+    std::string command = "C:\\dbg\\dump.bat " + std::to_string(GetCurrentProcessId());
+    system(command.c_str());
+
+    
+    // Restart tracing right away to continue coverage incase we dont crash
+    if (!ResumeThreadIptTracing(hThread, &paused)) {
+        print(std::string("ipt: ResumeThreadIptTracing failed err=") + std::to_string(GetLastError()));
+    }
+    else {
+        print("ipt: thread tracing resumed");
+    }
+    
+
+    bufer_2_file();
+}
+
+static void ipt_shutdown()
+{
+    if (gIptTracingEnabled.load()) {
+        StopProcessIptTracing(GetCurrentProcess());
+        gIptTracingEnabled.store(false);
+    }
+}
+
 uint64_t set_area_for_function_table(uint64_t size) {
     area_for_function_table = size;
 	print(std::string("set_area_for_function_table: ") + std::to_string(size));
+    return 0;
+}
+
+uint64_t set_thread_list_table_addres(uint64_t addr) {
+    thread_list_table_addres = addr;
+    print(std::string("set_thread_list_table_addres: ") + std::to_string(thread_list_table_addres));
     return 0;
 }
 
@@ -67,7 +471,7 @@ uint64_t set_output_file(char *file_path) {
 void init();
 
 
-HANDLE current_process;
+
 
 std::mutex file_mutex;
 
@@ -103,8 +507,8 @@ uint64_t alloc_thread_storage(uint64_t out_address)
     uint64_t thread_storage_address = static_cast<uint64_t>(reinterpret_cast<uintptr_t>(p));
     uint64_t* out_ptr = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(out_address));
     *out_ptr = thread_storage_address;
-
-
+    /*
+	done in asm code now
 	//Setup the linked list entry pointer
     uint64_t linked_list_entr = thread_storage_address + area_for_xsave64 + area_for_function_table;
     uint64_t* linked_list_entr_ptr = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(linked_list_entr));
@@ -114,7 +518,7 @@ uint64_t alloc_thread_storage(uint64_t out_address)
     uint64_t begining_of_trace_area = linked_list_entr + area_for_return_addr_linked_list;
     uint64_t* begining_of_trace_area_ptr = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(begining_of_trace_area));
     *begining_of_trace_area_ptr = begining_of_trace_area + 8;
-
+    */
 
     uint32_t idx = g_alloc_count.fetch_add(1, std::memory_order_relaxed);
     if (idx < kMaxAllocations) {
@@ -192,65 +596,27 @@ uint64_t dump_trace(uint64_t thread_storage_address)
 
 uint64_t dump_all_traces()
 {
-    // Load how many allocations we have (snapshot)
-    uint32_t count = g_alloc_count.load(std::memory_order_acquire);
-    uint64_t total_bytes = 0;
     print("dump_all_traces()");
-    for (uint32_t i = 0; i < count; ++i) {
-        uint64_t addr = g_allocations[i];
-        if (addr == 0) continue;
+    if (thread_list_table_addres == 0){
+        print("dump_all_traces: have not recived thread_list_table_addres from injected code yet");
+        bufer_2_file();
+        return 0;
+	}
+    for (uint32_t i = 0; i < max_thread_ids; i+=1) {
+        uint64_t addr = thread_list_table_addres + i * 8;
+
+        uint64_t* addr_ptr = reinterpret_cast<uint64_t*>(static_cast<uintptr_t>(addr));
+        uint64_t value_at_addr = *addr_ptr;
+        if (value_at_addr == 0) continue;
 
         // Call the existing dump_trace for this allocation.
-        dump_trace(addr);
+        dump_trace(value_at_addr);
 
 
     }
 
     return 0;
 }
-
-// global (process-wide)
-static DWORD g_flsIndex = FLS_OUT_OF_INDEXES;
-
-// Call once during DLL_PROCESS_ATTACH (not in DllMain, or do the minimal call only)
-bool InitTraceGuards() {
-    if (g_flsIndex == FLS_OUT_OF_INDEXES) {
-        g_flsIndex = FlsAlloc([](void* p) noexcept {
-            // Called on thread exit and when the FLS slot is freed.
-            // Mark the thread as "dead"/tearing down.
-            // Can't call into the C++ runtime safely here; keep it trivial.
-            // We can't write to C++ TLS here; that's the point of using FLS.
-            });
-    }
-    return g_flsIndex != FLS_OUT_OF_INDEXES;
-}
-
-
-static std::atomic<bool> g_shutdown_requested{ false };
-static HANDLE g_shutdown_event = nullptr;
-static HANDLE g_worker = nullptr;
-
-DWORD WINAPI WorkerThread(LPVOID) {
-    HANDLE ev = g_shutdown_event;
-    for (;;) {
-        DWORD w = WaitForSingleObject(ev, INFINITE);
-        if (w == WAIT_OBJECT_0) break; // shutdown signaled
-    }
-    // --- Do your real cleanup here (file flush, buffers, etc.) ---
-    // Keep in mind: if process is terminating, you may have little time.
-    
-    return 0;
-}
-
-//This does not work it is stupid llm code
-bool tracer_init() {
-    // Call this from your host right after LoadLibrary (NOT from DllMain)
-    g_shutdown_event = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-    if (!g_shutdown_event) return false;
-    g_worker = CreateThread(nullptr, 0, WorkerThread, nullptr, 0, nullptr);
-    return g_worker != nullptr;
-}
-
 
 
 BOOL APIENTRY DllMain(HMODULE hModule,
@@ -262,6 +628,7 @@ BOOL APIENTRY DllMain(HMODULE hModule,
     {
     case DLL_PROCESS_ATTACH:
         init();
+		//ipt_start_for_process(); //Does not work on amd processors
         //tracer_init();
         DisableThreadLibraryCalls(hModule);
         break;
@@ -271,6 +638,7 @@ BOOL APIENTRY DllMain(HMODULE hModule,
             RemoveVectoredExceptionHandler(gVehHandle);
             gVehHandle = nullptr;
 		}
+        ipt_shutdown();
         bufer_2_file();
         //Dumb llm code
         //g_shutdown_requested.store(true, std::memory_order_relaxed);
@@ -280,115 +648,37 @@ BOOL APIENTRY DllMain(HMODULE hModule,
     return TRUE;
 }
 
-// Call this at the beginning of any hook/tracer entry
-inline bool TraceTLSIsUsable() noexcept {
-    // If FLS isn't set up yet, be conservative: refuse to touch C++ TLS.
-    if (g_flsIndex == FLS_OUT_OF_INDEXES) return false;
+template <typename T>
+std::string to_hex_string(T value, bool with_prefix = true, bool uppercase = true)
+{
+    std::ostringstream oss;
+    if (uppercase)
+        oss.setf(std::ios::uppercase);
 
-    // We store a small alive flag in FLS. If absent, create one (first use on this thread).
-    void* v = FlsGetValue(g_flsIndex);
-    if (!v) {
-        // Allocate a tiny per-thread flag that has no destructor (intentionally leaked on thread end).
-        // This avoids depending on C++ TLS lifetime.
-        static constexpr uintptr_t kAlive = 1;
-        FlsSetValue(g_flsIndex, reinterpret_cast<void*>(kAlive));
-        return true;
-    }
+    if (with_prefix)
+        oss << "0x";
 
-    // If the FLS callback ran at thread-exit, you can flip it to a special value there
-    // (e.g., set to nullptr again or to 2). For simplicity, treat non-null as "alive".
-    return true;
-}
+    oss << std::hex << std::setw(sizeof(T) * 2) << std::setfill('0') << value;
 
-
-static inline bool is_readable_page(DWORD prot) {
-    // treat these as readable; include execute+read variants
-    const DWORD READ_MASK =
-        PAGE_READONLY | PAGE_READWRITE | PAGE_WRITECOPY |
-        PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY;
-    if (prot & PAGE_GUARD)     return false;   // touching it raises an exception
-    if (prot & PAGE_NOACCESS)  return false;
-    return (prot & READ_MASK) != 0;
-}
-
-// Safe peek: returns true only if the full 8 bytes were read; never crashes.
-extern "C" __declspec(noinline)
-bool safe_read_u64ll(uint64_t* out, const void* addr) noexcept {
-    if (!out || !addr) return false;
-
-    MEMORY_BASIC_INFORMATION mbi{};
-    if (!VirtualQuery(addr, &mbi, sizeof(mbi))) return false;
-    if (mbi.State != MEM_COMMIT)                return false;
-
-    // Ensure the entire 8-byte read lies inside this region
-    auto base = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
-    auto limit = base + mbi.RegionSize;
-    auto p = reinterpret_cast<uintptr_t>(addr);
-    if (p < base || (p + sizeof(uint64_t)) > limit) return false;
-
-    if (!is_readable_page(mbi.Protect)) return false;
-
-
-    print(std::string(" addr ") + std::to_string((uintptr_t)addr));
-    bufer_2_file();
-    SIZE_T n = 0;
-    if (!ReadProcessMemory(current_process, addr,
-        out, sizeof(*out), &n))
-        return false;
-
-    return n == sizeof(*out);
-}
-
-
-static inline bool safe_read_u64(uint64_t* out, const void* p) noexcept {
-    if (!out || !p) return false;
-    __try{
-        SIZE_T n = 0;
-        if (ReadProcessMemory(current_process, p, out, sizeof(*out), &n) && n == sizeof(*out)) {
-            return true;
-        }
-    }
-    __except (EXCEPTION_EXECUTE_HANDLER) {
-        *out = 0;
-    }
-    return false;
-}
-
-
-// -------------------------------
-// Per-thread return-address stacks
-// -------------------------------
-// For each thread we keep a map: function_num -> vector<saved_return_address>
-// This mirrors the Python approach ret_replacements[tid][jump_table_address] = stack
-
-static thread_local std::unordered_map<uint64_t, std::vector<uint64_t>>* tls_ret_stacks_ptr = nullptr;
-
-inline std::unordered_map<uint64_t, std::vector<uint64_t>>& GetTLSMap() {
-    if (!tls_ret_stacks_ptr) {
-        tls_ret_stacks_ptr = new std::unordered_map<uint64_t, std::vector<uint64_t>>();
-    }
-    return *tls_ret_stacks_ptr;
-}
-
-
-int export_stack_trace() {
-
-}
-
-int reset_stack_trace() {
-
+    return oss.str();
 }
 
 //this wont work if there is a debugger attached
 static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
 {
+
+
     auto* rec = ep->ExceptionRecord;
     auto* ctx = ep->ContextRecord;
+
 
     if (rec->ExceptionCode == EXCEPTION_BREAKPOINT) {
         // Read the opcode at RIP to know how far to skip.
         // 0xCC       = 1-byte INT3
         // 0xCD 0x03  = 2-byte INT 3
+
+		//check ipt is to big and if it is clear it
+        ipt_clear();
 
         uint64_t rip = ctx->Rip;
 
@@ -432,7 +722,10 @@ static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
 
         return EXCEPTION_CONTINUE_EXECUTION; // resume as if nothing happened
     }
-    else if (rec->ExceptionCode == EXCEPTION_SINGLE_STEP) {
+
+    DWORD threadId = GetCurrentThreadId();
+    
+    if (rec->ExceptionCode == EXCEPTION_SINGLE_STEP) {
         print("got single step exception");
         bufer_2_file();
         // Hardware breakpoints / TF traps also come here.
@@ -451,22 +744,49 @@ static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
 	else if (rec->ExceptionCode == 0xC0000005) { // EXCEPTION_ACCESS_VIOLATION - We are probably going to crash time to save traces
 		// Sometimes this exeption hits when we are replacing call instructions with breakpoints when we are not pauseing the threads
         // if that is the case it will be resoleved by the time this exeption exits so we can just ignore it
-        print("EXCEPTION_ACCESS_VIOLATION: RIP: " + std::to_string(ctx->Rip) + " RSP: " + std::to_string(ctx->Rsp));
+        DWORD selfTid = GetCurrentThreadId();
+
+        // Freeze everyone else
+        g_suspended_threads = suspend_all_other_threads(selfTid);
+        ipt_stop();
+        print("EXCEPTION_ACCESS_VIOLATION: TID: " + std::to_string(threadId) + " RIP: " + std::to_string(ctx->Rip) + "(" + to_hex_string(ctx->Rip) + ") RSP: " + std::to_string(ctx->Rsp) + " RAX: " + std::to_string(ctx->Rax));
         dump_all_traces();
         bufer_2_file();
+        system("pause");
+        resume_threads(g_suspended_threads);
+        
 		return EXCEPTION_CONTINUE_SEARCH;//mabye the is atry catch that will handle it
     }
-    else if (rec->ExceptionCode == 0xC000001D) { // STATUS_ACCESS_VIOLATION - We are probably going to crash time to save traces
-        print("STATUS_ILLEGAL_INSTRUCTION: RIP: " + std::to_string(ctx->Rip) + " RSP: " + std::to_string(ctx->Rsp));
+    else if (rec->ExceptionCode == 0xC000001D) { // STATUS_ILLEGAL_INSTRUCTION - We are probably going to crash time to save traces
+        DWORD selfTid = GetCurrentThreadId();
+
+        // Freeze everyone else
+        g_suspended_threads = suspend_all_other_threads(selfTid);
+        ipt_stop();
+        print("STATUS_ILLEGAL_INSTRUCTION: TID: " + std::to_string(threadId) + " RIP: " + std::to_string(ctx->Rip) + "("+ to_hex_string(ctx->Rip) + ") RSP: " + std::to_string(ctx->Rsp) + " RAX: " + std::to_string(ctx->Rax));
         dump_all_traces();
         bufer_2_file();
+        system("pause");
+        resume_threads(g_suspended_threads);
+        
         return EXCEPTION_CONTINUE_SEARCH;//mabye the is atry catch that will handle it
     }
-    
+    else if (rec->ExceptionCode == 0xE06D7363) { // MSVC C++ exception
+        return EXCEPTION_CONTINUE_SEARCH; // let C++ runtime handle it
+    }
     else {
-        print("got other exception:"+ std::to_string(rec->ExceptionCode) + " RIP: " + std::to_string(ctx->Rip));
+
+        DWORD selfTid = GetCurrentThreadId();
+
+        // Freeze everyone else
+        g_suspended_threads = suspend_all_other_threads(selfTid);
+        ipt_stop();
+        print("got other exception: "+ std::to_string(rec->ExceptionCode) + " TID: " + std::to_string(threadId) + "(" + to_hex_string(ctx->Rip) + ") RIP: " + std::to_string(ctx->Rip) + " RAX: " + std::to_string(ctx->Rax));
 		dump_all_traces(); // We are probably going to crash, try to save traces
         bufer_2_file();
+        system("pause");
+        resume_threads(g_suspended_threads);
+        
     }
 
     return EXCEPTION_CONTINUE_SEARCH;
@@ -474,9 +794,9 @@ static LONG CALLBACK BreakpointVeh(EXCEPTION_POINTERS* ep)
 
 
 void init() {
+
 	FILE* fp;
 	
-	//Not used remove later
     current_process = GetCurrentProcess();
 
 	fopen_s(&fp, "C:\\dbg\\debug_output.txt", "w");
@@ -492,6 +812,9 @@ void init() {
         print("AddVectoredExceptionHandler failed");
     }
 
+    uint64_t VEH_addr = reinterpret_cast<uint64_t>(&BreakpointVeh);
+    print("VectoredExceptionHandler address: "+ std::to_string(VEH_addr) + "("+ to_hex_string(VEH_addr) +")");
+
     bufer_2_file();
 
 }
@@ -501,9 +824,6 @@ void print_text() {
 
     print("Printing text");
 }
-
-
-
 
 
 void print_to_file(const char* str) {

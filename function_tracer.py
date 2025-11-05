@@ -70,6 +70,8 @@ loaded_modules: Dict[str, int] = {}
 
 # Exported functions from calltracer.dll resolved to absolute addresses
 call_tracer_dll_func: Dict[str, int] = {}
+call_tracer_thunk_func = {}
+call_tracer_thunk_func_ptr = {}
 
 # Per-thread replacement return addresses for MinHook trampolines
 # Structure: ret_replacements[tid][jump_table_addr] = [return_addr_stack]
@@ -79,7 +81,6 @@ ret_replacements: Dict[int, Dict[int, List[int]]] = {}
 asm_code_to_run: List[Tuple[str, Optional[Callable[[Any], None]]]] = []
 
 # Control flags / addresses
-allocate_and_inject_dll: bool = True
 in_loading_phase: bool = True
 is_in_injected_code: bool = False
 code_injection_address: Optional[int] = None
@@ -146,15 +147,15 @@ functions_end = {}
 exe_basic_name = None
 exe_name = None
 
-forbid_break_point_jumps = False # if set to try break point jumps are not used (meaning some functions that need them wont be traced)
-only_replace_single_instruction_init = False # Only replace the first instruciton in the function init
-only_allow_single_instruction_replacements = False # When tracing calls only allow one instruction replacement, leads to many uses of break point jumps whereever a 5 byte jump wont fit (breakpoint jumps are SLOW) ONLY applies to call replacements not INIT replacements.
-exclude_call_tracing_in_force_truncated_functions = True
-use_calls_for_patching = True #Replaces jumps with calls. Slower than jumps as the return address needs to be captured, saved then restored. Using a jump techic uses 2 instructions using calls uses about 150 instructions and multiple memmory writes and reads 
+forbid_break_point_jumps = True # if set to try break point jumps are not used (meaning some functions that need them wont be traced)
+use_calls_for_patching = False #Replaces jumps with calls. Slower than jumps as the return address needs to be captured, saved then restored. Using a jump techic uses 2 instructions using calls uses about 150 instructions and multiple memmory writes and reads 
 redirect_return = False
 respect_prolog_size = False #If we wont replace any instructions after the said prolog size
 forbid_entry_tracing = False #does not add any tracing code just injects. For use in testing when program craches
 trace_all_calls = True
+only_replace_single_instruction_init = False # Only replace the first instruciton in the function init
+only_allow_single_instruction_replacements = False # When tracing calls only allow one instruction replacement, leads to many uses of break point jumps whereever a 5 byte jump wont fit (breakpoint jumps are SLOW) ONLY applies to call replacements not INIT replacements.
+exclude_call_tracing_in_force_truncated_functions = True # if a function has been truncated (cause it contains data) dont trace calls
 
 if forbid_entry_tracing and redirect_return:
     raise ValueError("cant forbid forbid_entry_tracing when also redirecting return")
@@ -186,6 +187,7 @@ function_exclusions = [
 
 rsp_ofset = 128
 
+
 function_exclusions = []
 
 
@@ -201,9 +203,11 @@ def start_or_attach(argv: List[str]) -> None:
     p = argparse.ArgumentParser(description="Run a for-loop over each line of a file.")
     p.add_argument("executable", help="pid or executable")
     p.add_argument("--pause_on_load", action="store_true", help="Wait for the proces to start and load kernel32.dll then pauses it")
+    p.add_argument("--find_upacking_region", action="store_true", help="Use together with --pause_on_load to find what regions are unpacked")
+    p.add_argument("--wait_for_unpack", help="Wait until executable is unpacked using data from find_upacking_region, format intaddress:hexbyte use together with --pause_on_load")
     p.add_argument("--only_analyse", action="store_true", help="Only does executable analysis")
-    p.add_argument("--exclude_addresses", default="utf-8", help="json file with function addresses to exclude")
-    p.add_argument("--memory_scan", action="store_true", help="scans the executable periodicly for changes in executable code. Changes like hooks and unpacking.")
+    p.add_argument("--exclude_functions", default="utf-8", help="json file with function ordinals to exclude")
+    p.add_argument("--memory_scan", type=int, default=None, nargs="?", const=-1, help="scans the executable periodicly for changes in executable code. Changes like hooks and unpacking.")
     args = p.parse_args()
     
     arg1 = args.executable
@@ -244,7 +248,9 @@ def start_or_attach(argv: List[str]) -> None:
     handle = hook_lib.get_handle(pid)
     
     executable_path = hook_lib.get_process_image_path(handle)
+    has_loaded_dll = False
     
+    print("waiting for kernel32")
     mods = wait_for_kernel32(handle)
     
     
@@ -252,7 +258,7 @@ def start_or_attach(argv: List[str]) -> None:
     # some activity might still get lost as the way we probe for kernel32 is async but doing it syncronysly would be much more complicated
 
     if spawned or args.pause_on_load:
-        print("suspending process")
+        print("suspending process as it has just loaded")
         suspended = True
         res = hook_lib.NtSuspendProcess(handle)
         
@@ -275,24 +281,106 @@ def start_or_attach(argv: List[str]) -> None:
             asembly_cache = json.load(f)
             for key in asembly_cache:
                 asembly_cache[key] = bytes.fromhex(asembly_cache[key])
-    
+    print("get pdata")
     get_pdata(executable_path, base_addr, exe_basic_name)
     
-    if args.exclude_addresses:
-        if os.path.exists(args.exclude_addresses):
-            with open(args.exclude_addresses, "r") as f:
+    start_addr = 9999999999999999999
+    end_addr = 0
+    for function_start_addr, function_end_addr, flags, pdata_ordinal, prolog_size in pdata_functions:
+        start_addr = min(function_start_addr, start_addr)
+        end_addr = max(function_end_addr, end_addr)
+        func_len = function_end_addr - function_start_addr
+    data_len = end_addr - start_addr
+    
+    lookup_calltrace_exports()
+    
+    if args.wait_for_unpack:
+        num_str, byte_str = args.wait_for_unpack.split(":")
+        
+        
+        address_of_byte = start_addr + int(num_str)
+        packed_byte = bytes([int(byte_str, 16)])
+        
+        
+        mem_dat = hook_lib.read(handle, address_of_byte, 1)
+        if packed_byte != mem_dat:
+            raise Exception("TO slow")
+        
+        if suspended:
+            print("resuming process while it unpacks")
+            hook_lib.NtResumeProcess(handle)
+            suspended = False
+        
+        
+
+        
+        while True:
+            mem_dat = hook_lib.read(handle, address_of_byte, 1)
+            if packed_byte != mem_dat:
+                hook_lib.NtSuspendProcess(handle)
+                print("suspended process as it has now unpacked")
+                suspended = True
+                break
+        
+        #the executable should be suspended and unpacked now
+        
+    
+    if args.find_upacking_region:
+        
+        #read packed data
+        
+        
+        packed_data = hook_lib.read(handle, start_addr, data_len)
+        
+        if suspended:
+            print("resuming process")
+            hook_lib.NtResumeProcess(handle)
+            suspended = False
+         
+        #save packed data to cache for later consumtion
+        #packed_data_file = "cache\\" + exe_basic_name + "_packed_data.bin"
+        #with open(packed_data_file, "wb") as f:
+        #    f.write(packed_data)
+        
+        input("press enter when executable has unpacked and loaded completly") 
+        
+        unpacked_data = hook_lib.read(handle, start_addr, data_len)
+        
+        #save packed data to cache for later consumtion
+        #unpacked_data_file = "cache\\" + exe_basic_name + "_unpacked_data.bin"
+        #with open(unpacked_data_file, "wb") as f:
+        #    f.write(unpacked_data)
+        
+        last_non_matching_byte = None
+        for i in range(data_len-1, -1, -1):
+            if packed_data[i] != unpacked_data[i]:
+                last_non_matching_byte = i
+                break
+        if last_non_matching_byte is not None:
+            org_dat = bytes([packed_data[last_non_matching_byte]]).hex()
+            desc = str(last_non_matching_byte)+":"+org_dat
+            print("last_non_matching_byte:", desc)
+        else:
+            print("no differance after unpack")
+        
+        exit()
+        
+    if args.exclude_functions:
+        if os.path.exists(args.exclude_functions):
+            with open(args.exclude_functions, "r") as f:
                 loaded_json = json.load(f)
                 for index in loaded_json:
-                    func_addr = int(index)
-                    func = get_function_containing(func_addr)
-                    if func is None:
-                        print("no function at address:", func_addr)
-                    else:
-                        function_exclusions.append(func[3])
+                    func_ordinal = int(index)
+                    function_exclusions.append(func_ordinal)
+                    #func = get_function_containing(func_addr)
+                    #if func is None:
+                    #    print("no function at address:", func_addr)
+                    #else:
+                    #    function_exclusions.append(func[3])
     
-    print("analyse_executable_code")
     
-    if args.memory_scan:
+    
+    if args.memory_scan is not None:
         map_file = "output\\"+exe_basic_name+'_map.json'
         
         
@@ -342,7 +430,7 @@ def start_or_attach(argv: List[str]) -> None:
                 #print(function)
                 func_len = function['function_end_addr'] - function['function_start_addr']
                 data = hook_lib.read(handle, function['function_start_addr'], func_len)
-                if data != last_func_data[i]:
+                if (args.memory_scan == -1 and data != last_func_data[i]) or (args.memory_scan != -1 and data[args.memory_scan] != last_func_data[i][args.memory_scan]):
                     if function['ordinal'] not in changes:
                         changes[function['ordinal']] = 0
                         
@@ -362,24 +450,39 @@ def start_or_attach(argv: List[str]) -> None:
             
             time.sleep(30.0)
     else:
+        print("analyse_executable_code")
         analyse_executable_code(handle)
     
-    if not args.only_analyse and not args.memory_scan:
-        allocate_mem_and_inject_dll(handle, exe_entry_address)
+    if not args.only_analyse and not args.memory_scan is not None:
+        allocate_mem(handle, exe_entry_address)
         
-        lookup_calltrace_exports(handle)
+            
+        
         
         inject_trace_injection_functions(handle)
-    
+        
+        ##if we are using breakpoint jumps we need to inject the dll earlier ro make sure that the vectorised exception handler is registerd
+        if not forbid_break_point_jumps:
+            print("inject dll")
+            inject_dll(handle)
+        
         print("hooking executable")
         hook_calls(handle)
+        
+        #the last thing we do is inject the calltrace dll as the process needs to be resumed for that to work
+        #code that needs the calltrace dll will spin untill the dll is ready
+    
+        
+        if forbid_break_point_jumps:
+            print("inject dll")
+            inject_dll(handle)
     
     if suspended:
         print("resuming process")
         hook_lib.NtResumeProcess(handle)
         suspended = False
     
-    if not args.only_analyse and not args.memory_scan:
+    if not args.only_analyse and not args.memory_scan is not None:
         with open(assembled_cache_file, "w") as f:
             for key in asembly_cache:
                 asembly_cache[key] = asembly_cache[key].hex()
@@ -399,10 +502,9 @@ def wait_for_kernel32(handle):
         try:
             mods = hook_lib.enumerate_modules(handle, do_until_sucess = True, base_name = True)
             if "kernel32.dll" in mods:
-                break
+                return mods
         except OSError as e:
             pass #print("enumerate_modules faield trying again")
-    return mods
 
 def get_base_name(filename: str) -> str:
     """Return lowercase filename without extension from a Windows path."""
@@ -460,10 +562,11 @@ def allocate_close(process, address_close_to_code):
     process.close_handle()
     return adddress_close_by
 
-def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> None:
-    """Allocate remote memory regions and inject the helper DLL."""
+def allocate_mem(process_handle, address_close_to_code: int) -> None:
+    """Allocate remote memory regions."""
     global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, alocated_thread_storages
-
+    
+    print("allocating memmory")
     # VirtualAllocEx signature configuration
     ctypes.windll.kernel32.VirtualAllocEx.argtypes = [
         wintypes.HANDLE,  # hProcess
@@ -482,7 +585,8 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
     print("remote_memory:", remote_memory)
     
-    size = 0x20000000
+    #we cant to keep the size as small as posible as relative addressing can only handle ofsets of +-2147483647
+    size = len(pdata_function_ids)*300 + 100000 #we do 300 bytes per function and 100000 bytes for other stuff
     shell_code_address = 0
     atempt = 1
     while shell_code_address == 0:
@@ -493,10 +597,10 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
             process_handle, ctypes.c_void_p(preferred_address), size, 0x3000, 0x40
         )
         if shell_code_address == 0:
-            print("Could not allocate jump table; this can be somewhat random. Please try again.")
-            if atempt > 3:
-                size //=4
-                size *= 3
+            print("Could not allocate jump table; this can be somewhat random. Trying again.")
+            #if atempt > 3:
+            #    size //=4
+            #    size *= 3
             atempt += 1
     print("shell_code_address:", shell_code_address)
     last_seize = size
@@ -518,29 +622,59 @@ def allocate_mem_and_inject_dll(process_handle, address_close_to_code: int) -> N
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
     print("alocated_thread_storages:", alocated_thread_storages)
     
+    print("setting up thread storage")
+    #here we prealoacte memory for threads
+    for stor_id in range(nr_of_prepared_alocations):
+        thread_storage_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list + area_for_tracing_results, 0x3000, 0x04)
+        if thread_storage_address == 0:
+            raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
+        hook_lib.write(process_handle, alocated_thread_storages + stor_id*8, struct.pack("<Q", thread_storage_address))
+        
+        #OLD code to do allocations using dll: hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + stor_id*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nret")
+
+def inject_dll(process_handle):
     # Inject helper DLL with MinHook-based hooks
     run_loadlibrary_in_process(process_handle, "calltracer.dll") #FIXMEEE process
+    fixup_calltrace_exports(process_handle)
     
+    setup_dll_values(process_handle)
+    
+    fixup_calltrace_exports_thunks(process_handle)
     
     
     
 def inject_trace_injection_functions(process_handle):
-    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages, debug_func_address, add_entry_trace_address, add_called_trace_address, add_call_trace_address, add_exit_trace_address, push_value_from_linkedlist_address, pop_value_from_linkedlist_address, pop_value_with_sameRSP_from_linkedlist_address
+    global call_tracer_thunk_ready_addr, register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, restore_state_address, save_state_address, alocated_thread_storages, debug_func_address, add_entry_trace_address, add_called_trace_address, add_call_trace_address, add_exit_trace_address, push_value_from_linkedlist_address, pop_value_from_linkedlist_address, pop_value_with_sameRSP_from_linkedlist_address
     
+    call_tracer_thunk_ready_addr = shell_code_address
+    shell_code_address += 1
     
-    print("Set set_area_for_function_table")
-    mem_size = str(area_for_function_table)
-    asf = "sub rsp, 40\nmov     rcx, "+mem_size+"\nmovabs rax, "+str(call_tracer_dll_func['set_area_for_function_table'])+"\n\ncall rax\nadd rsp, 40\nret"
-    injection_info = hook_lib.inject_asm(process_handle, asf)
-    
-    print("set out file:", out_file, "using dll function:", call_tracer_dll_func['set_output_file'])
-    str_addr, alloc_size = hook_lib.alloc_and_write_remote(process_handle, out_file.encode(locale.getpreferredencoding()) + b'\x00', False)
-    set_output_file_asm = "sub rsp, 40\nmovabs     rcx, "+str(str_addr)+"\nmovabs rax, "+str(call_tracer_dll_func['set_output_file'])+"\n\ncall rax\nadd rsp, 40\nret"
-    hook_lib.inject_asm(process_handle, set_output_file_asm)
+    #Setup thunk functions for dll
+    for name in call_tracer_dll_func:
+        
+        
+        #this will be zero untill we fill it in
+        call_tracer_thunk_func_ptr[name] = shell_code_address
+        shell_code_address += 8
+        thunk_address = shell_code_address
+        
+        call_tracer_thunk_func[name] = thunk_address
+        
+        #This code spins untill the calltracer dll has been loaded
+        thunk_func_code = asm(strip_semicolon_comments(f"""
+        .check_if_call_trace_ready:
+        cmp     byte ptr [{call_tracer_thunk_ready_addr}], 0
+        je .check_if_call_trace_ready
+        jmp [{call_tracer_thunk_func_ptr[name]}]
+        """), call_tracer_thunk_func[name])
+        shell_code_address += len(thunk_func_code)
+        hook_lib.write(process_handle, call_tracer_thunk_func[name], thunk_func_code, do_checks = False)
     
     
     #save state requires you to push 128 bytes to rsp before calling lea   rsp, [rsp-128]
     #Setup save sate and restore state functions
+    
+    VirtualAlloc_addr = hook_lib.get_remote_function(process_handle, "kernel32", "VirtualAlloc")
     
     #save state function
     save_state_asm = strip_semicolon_comments(f"""
@@ -570,6 +704,7 @@ push rbx
 
 
 
+
 ; Find thread storage from list
 
 .find_current_thread_location:
@@ -614,6 +749,7 @@ jnz .thread_memmory_is_alocated  ; jump if not zero (ZF = 0)
     .not_found:
         int3 ; can never be allowed to happen
         xor     eax, eax
+        jmp .not_found
 
     .found:
         mov [r12], rax ; save new vale
@@ -625,13 +761,29 @@ jnz .thread_memmory_is_alocated  ; jump if not zero (ZF = 0)
 .thread_memmory_is_alocated:
 mov r12, [r12]
 
-;Check if trace memmory starts be become to big
-xor r9, r9
+
+
 mov r10, r12
 add r10, """+str(area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list)+"""; get memory area for tracing
 
+
 mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
 
+test r8, r8
+jnz  .skip_mem_setup
+
+mov r9, r12
+add r9, """+str(area_for_xsave64 + area_for_function_table)+"""
+mov [r9], r9 ;setup linked list mem 
+
+mov r8, r10
+add r8, 8
+mov [r10], r8 ;setup trace mem 
+
+.skip_mem_setup:
+
+;Check if trace memmory starts be become to big
+xor r9, r9
 add r10 , """+str(area_for_tracing_results-1000)+"""
 cmp r10, r8
 ja  .size_ok 
@@ -680,23 +832,44 @@ test    RDI, RDI
 jz .skip_alloc_thread_storage
 
     ;Alocate new thread storage rcx is alrady filled from 
-
-    mov rcx, rdi ;set first arg
-    movabs rax, """+str(call_tracer_dll_func['alloc_thread_storage'])+"""
+    
+    mov r13, rdi ;save the reg used for storage
+    
+    ;sub  rsp, 40
+    ; call VirtualAlloc
+    xor     rcx, rcx           ; lpAddress = NULL
+    movabs     rdx, """+str(area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list + area_for_tracing_results)+"""           ; dwSize = thread_storage_size 
+    mov     r8, 0x3000        ; MEM_COMMIT | MEM_RESERVE
+    mov     r9, 0x04          ; PAGE_READWRITE
+    
+    movabs rax, """+str(VirtualAlloc_addr)+"""
     call rax
+    ;add  rsp, 40
+    
+    .allocation_error:
+    test rax, rax
+    jz .allocation_error
+    
+    ;Save the return adress
+    mov [r13], rax
+    
+    
+
 
     ;Restore r15
     mov r15, [rsp+48]
-
+    jmp .skip_dump_trace
 .skip_alloc_thread_storage:
 
+
+;DUMP thread can run at the same time as alloc_thread_storage as registers will be cloberd but it never will so it does not matter
 test    R9, R9
 jz .skip_dump_trace
 
     ;dump saved traces
 
     mov rcx, r9 ;set first arg
-    movabs rax, """+str(call_tracer_dll_func['dump_trace'])+f"""
+    movabs rax, """+str(call_tracer_thunk_func['dump_trace'])+f"""
     call rax
 
     ;Restore r15
@@ -718,167 +891,6 @@ jmp [r15 - {rsp_ofset+8}] ;Jump back to return address of save call
     
     debug_save_state_asm = strip_semicolon_comments(f"""
 
-; ===== prologue: preserve flags & callee-saved registers =====
-pushfq
-sub   rsp, 8
-
-; save callee-saved GPRs that we will use or clobber
-push r15
-mov r15, rsp
-add r15, {rsp_ofset+24+8}; save original return_address stack location in r15 fix ofset 24 caused by earlier pushes and 128 from before call and 8 from the call
-
-push rbp
-push rsi
-push rdi
-push rax
-push rcx
-push rdx
-push r8
-push r9
-push r10    
-push r11
-push r12
-push r13
-push r14
-push rbx
-
-
-
-; Find thread storage from list
-
-.find_current_thread_location:
-xor rdi,rdi
-xor r11,r11
-; load current thread id (low 32 bits of GS:[0x48])
-xor rax,rax
-mov     eax, dword ptr gs:[0x48]    ; EAX = current TID
-xor r12,r12
-lea r12, [rax*8] ; fix offset
-; base pointer to the array
-movabs  rsi, """+str(thread_storage_list_address)+"""           ; RSI = array base
-add r12, rsi
-mov rax, [r12]
-test rax, rax
-jnz .thread_memmory_is_alocated  ; jump if not zero (ZF = 0)
-
-    ; not alocated - get allocation
-
-
-    movabs rsi, """+str(alocated_thread_storages)+"""
-    mov rcx, """+str(nr_of_prepared_alocations)+"""
-    ; rsi = base, rcx = count
-    ; clobbers: rdi, rax
-    ; returns:  rdi = addres of value, rax = popped value (0 if none), ZF=1 if none
-
-        mov     rdi, rsi              ; cursor = base
-    .scan:
-        test    rcx, rcx
-        jz      .not_found
-
-        xor     eax, eax              ; rax := 0 to swap into the slot
-        xchg    rax, [rdi]            ; atomically: rax <- slot, slot <- 0
-        test    rax, rax
-        jnz     .found                ; got a non-zero, done
-
-        add     rdi, 8                ; next qword
-        dec     rcx
-        jmp     .scan
-
-
-    .not_found:
-        int3 ; can never be allowed to happen
-        xor     eax, eax
-
-    .found:
-        mov [r12], rax ; save new vale
-        mov     r11, 1 ;set R11 so we store the extended registers we only do it if we need to as it is slow
-        ;RDI is already set so alloc_thread_storage(uint64_t out_address) will be called further down
-
-
-
-.thread_memmory_is_alocated:
-mov r12, [r12]
-
-;Check if trace memmory starts be become to big
-xor r9, r9
-mov r10, r12
-add r10, """+str(area_for_xsave64 + area_for_function_table + area_for_return_addr_linked_list)+"""; get memory area for tracing
-
-mov r8, [r10]   ;Retrive end on list that is saved in the first 64 bits
-
-add r10 , """+str(area_for_tracing_results-1000)+"""
-cmp r10, r8
-ja  .size_ok 
-    mov     r9, r12 ; We set r9 indicating that we need to empty the memory
-    mov     r11, 1 ;set R11 so we store the extended registers we only do it if we need to as it is slow
-.size_ok:
-
-
-;IF r11 is not zero we need to save the extended state so we can call calling alloc_thread_storage
-test    r11, r11
-jz .skip_saving_extended_state
-    ; set mask: XCR0 -> EDX:EAX, ECX must be 0
-    xor  ecx, ecx
-    xgetbv
-
-    ; save extended state; DO NOT use rdx as the memory base (EDX is mask upper)
-    xsave64 [r12]            ; (use xsaveopt if you detect support)
-    xor  ecx, ecx
-
-.skip_saving_extended_state:
-
-
-; ===== prepare for making the actual code =====
-; We must ensure RSP is 16-byte aligned at the CALL instruction and have 32 bytes shadow.
-
-; Compute the adjustment needed to align RSP to 16 bytes:
-; r10 currently saved on stack; we'll use r10 as temp for alignment value
-mov  rax, rsp
-and  rax, 15          ; rax = rsp % 16
-xor  r10, r10         ; r10 = 0 (will store correction amount if any)
-test rax, rax
-je   .no_align_needed
-    mov  r10, 16
-    sub  r10, rax         ; r10 = (16 - (rsp & 15))
-    sub  rsp, r10         ; adjust stack to align to 16
-.no_align_needed:
-push r10
-push r15
-push r11
-push r12
-
-; Now allocate the 32-byte shadow space required by Windows x64 ABI
-sub  rsp, 32
-
-test    RDI, RDI
-jz .skip_alloc_thread_storage
-
-    ;Alocate new thread storage rcx is alrady filled from 
-
-    mov rcx, rdi ;set first arg
-    movabs rax, """+str(call_tracer_dll_func['alloc_thread_storage'])+"""
-    call rax
-
-    ;Restore r15
-    mov r15, [rsp+48]
-
-.skip_alloc_thread_storage:
-
-test    R9, R9
-jz .skip_dump_trace
-
-    ;dump saved traces
-
-    mov rcx, r9 ;set first arg
-    movabs rax, """+str(call_tracer_dll_func['dump_trace'])+f"""
-    call rax
-
-    ;Restore r15
-    mov r15, [rsp+48]
-
-.skip_dump_trace:
-
-jmp [r15 - {rsp_ofset+8}] ;Jump back to return address of save call
     """)
     
     debug_func_address = shell_code_address
@@ -1140,6 +1152,7 @@ mov     r11, qword ptr [r12]       ; r11 = current top node
 .pop_empty:
     xor     rax, rax                    ; rax = 0
     int3 ; indication that something has gone teribly wrong
+    jmp .pop_empty
 
 .pop_done:
 
@@ -1166,6 +1179,7 @@ mov     r11, qword ptr [r12]       ; r11 = current top node
 .pop_empty:
     xor     rax, rax                    ; rax = 0
     int3 ; indication that something has gone teribly wrong
+    jmp .pop_empty
 
 .pop_done:
 
@@ -1176,15 +1190,33 @@ ret"""), pop_value_from_linkedlist_address)
     hook_lib.write(process_handle, pop_value_from_linkedlist_address, pop_value_from_linkedlist_code, do_checks = False)
     
     
-    print("setting up thread storage")
-    
-    #here we prealoacte memory for threads
-    injection_info = None
-    for stor_id in range(nr_of_prepared_alocations):
-        hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + stor_id*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nret")
     
     
 
+def setup_dll_values(process_handle):
+    global suspended, out_file, nr_of_prepared_alocations, alocated_thread_storages, area_for_function_table, thread_storage_list_address
+    #Here we hope to good we are fast enogh so that no hookin libs are executed while we resume and resuspend after doing our calls # FIXMEE move these to a later part of the code
+    if suspended:
+        hook_lib.NtResumeProcess(process_handle)
+    
+    print("set_area_for_function_table")
+    mem_size = str(area_for_function_table)
+    asf = "sub rsp, 40\nmov     rcx, "+mem_size+"\nmovabs rax, "+str(call_tracer_dll_func['set_area_for_function_table'])+"\n\ncall rax\nadd rsp, 40\nret"
+    injection_info = hook_lib.inject_asm(process_handle, asf)
+    
+    print("set_thread_list_table_addres")
+    asf = "sub rsp, 40\nmovabs     rcx, "+str(thread_storage_list_address)+"\nmovabs rax, "+str(call_tracer_dll_func['set_thread_list_table_addres'])+"\n\ncall rax\nadd rsp, 40\nret"
+    injection_info = hook_lib.inject_asm(process_handle, asf)
+    
+    
+    print("set out file:", out_file, "using dll function:", call_tracer_dll_func['set_output_file'])
+    str_addr, alloc_size = hook_lib.alloc_and_write_remote(process_handle, out_file.encode(locale.getpreferredencoding()) + b'\x00', False)
+    set_output_file_asm = "sub rsp, 40\nmovabs     rcx, "+str(str_addr)+"\nmovabs rax, "+str(call_tracer_dll_func['set_output_file'])+"\n\ncall rax\nadd rsp, 40\nret"
+    hook_lib.inject_asm(process_handle, set_output_file_asm)
+    
+    
+    if suspended:
+        hook_lib.NtSuspendProcess(process_handle)
 
 class PDataIndex:
     def __init__(self, pdata_functions):
@@ -1617,9 +1649,14 @@ def hook_calls(process_handle) -> None:
     with open(module_file, "w") as f:
         json.dump(loaded_modules, f, indent=2)
     
+    #Setup memmory and other stuff and hope no other hooking happens while we do that!!!!
+    
+    
     if not suspended: #if it was spawned it is already suspended
         hook_lib.NtSuspendProcess(process_handle)
+        suspended = True
     
+    print("write hooks")
     for insert_location, jmp_to_shellcode in jump_writes:
         insert_len = len(jmp_to_shellcode)
         expected_bytes = get_cache_data(insert_location, insert_len)
@@ -1629,7 +1666,9 @@ def hook_calls(process_handle) -> None:
         else:
             print("skiping injection at addr: ", insert_location, " as the bytes have been changed meaning there is selfmodifying code doing stuff.")
     
-    if not suspended:
+    
+    
+    if suspended:
         hook_lib.NtResumeProcess(process_handle)
     print("inserted calltracing")
     
@@ -1674,6 +1713,7 @@ def add_instruction_redirect(
     process_handle,
     call_num,
     doing_calls,
+    ends_with_jump = False
 ) -> Tuple[Optional[int], int]:
     """Patch a single instruction (typically CALL) to redirect into shellcode that wraps it with int3 breakpoints.
 
@@ -1745,19 +1785,10 @@ def add_instruction_redirect(
         if closer_alocation:
             to_address = closer_alocation
         asmm = f"jmp {to_address}" + (";nop" * extra_bytes)
-        if use_calls_for_patching:
+        if use_calls_for_patching and not ends_with_jump: ##if we are moving a jump we cant use call patching as the linked_list poper wont execute
             asmm = f"call {to_address}" + (";nop" * extra_bytes)
             
             
-            #This does not work as the instructions we are about to exectue might alter rsp so we cant locate relative to rsp
-            #rsp_return = True
-            #save_ret = (
-            #    "push rax\n"
-            #    f"movabs rax, [rsp+8]\n"
-            #    f"mov [rsp-{rsp_ofset-24}], rax\n" #Place return address -8 behind rsp_ofset
-            #    "pop rax\n"
-            #    "lea rsp, [rsp+8]\n"
-            #)
             save_call_jump_ret = "lea rsp, [rsp-8]\n" + generate_clean_asm_func_call(strip_semicolon_comments(f"""
             add r12, {area_for_xsave64}
             mov r10, r12
@@ -1792,9 +1823,9 @@ call {pop_value_from_linkedlist_address} ;places poped value at address r15-100 
             print("trace of function "+str(function_ordinal)+"  call ("+str(call_num)+")/ call ignored due to needing breakpoint")
             do_use_trace = False
     
-    if jump_breakpoint is not None:
+    if jump_breakpoint is not None and do_use_trace:
         jump_breakpoints.append((jump_breakpoint, jump_to_address))
-        hook_lib.inject_asm(process_handle, "sub rsp, 40\nmovabs     rcx, "+str(jump_breakpoint)+"\nmovabs     rdx, "+str(jump_to_address)+"\nmovabs rax, "+str(call_tracer_dll_func['add_jump_breakpoint'])+"\n\ncall rax\nadd rsp, 40\nret")
+        hook_lib.inject_asm(process_handle, "sub rsp, 40\nmovabs     rcx, "+str(jump_breakpoint)+"\nmovabs     rdx, "+str(jump_to_address)+"\nmovabs rax, "+str(call_tracer_thunk_func['add_jump_breakpoint'])+"\n\ncall rax\nadd rsp, 40\nret")
 
     
     print(jump_type,'org:', instructions_asm, "(", instructions_len, ") write:", asmm, "bytes:", len(jmp_to_shellcode), "at:", insert_location, "jump_to_address:", jump_to_address, "diff:", jump_distance)
@@ -2005,7 +2036,8 @@ call {add_call_trace_address}
                 diff = new_instruction_address - instruction_address
                 instruct_off = off-diff
                 if instruct_off > 2147483647:
-                    raise Exception("altering: "+instruction_asm + "new offset to large")
+                    do_use_trace = False
+                    raise Exception("altering: "+instruction_asm + "new offset "+str(instruct_off)+" to large")
                 
                 rip_to = instruction_address + instruction_len + off
                 
@@ -2297,8 +2329,8 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                     use_instruction = False
                     print("jump_to_instruction_in_init: (skiping instruction)", jump_instructions)
             
-            #loop instructions are short max 127 bytes so cant be moved
-            if instruction_name.startswith("loop"):
+            #loop and jrcxz instructions are short max 127 bytes so cant be moved
+            if instruction_name.startswith("loop") or instruction_name == "jrcxz" or instruction_name == "jecxz" or instruction_name == "jcxz":
                 if len(init_instructions) == 0:
                     doing_init = False
                 else:
@@ -2358,6 +2390,7 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                     process_handle,
                     call_num,
                     doing_calls,
+                    ends_with_jump = is_jump
                 )
         else:
             call_replace_instructions.append(instruction)
@@ -2371,9 +2404,9 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
             for inst in reversed(call_replace_instructions):
                 inst_name = inst[2].split(" ")[0]
                 
-                if inst_name == 'db' or inst_name.startswith("loop"):#we cant move db stuff we have no idea what they are and we cant move loops as they can only jmp 127 bytes(i guesss we could implment them as "dec rcx jnz .loop")
+                if inst_name == 'db' or inst_name.startswith("loop") or instruction_name == "jrcxz" or instruction_name == "jecxz" or instruction_name == "jcxz":#we cant move db stuff we have no idea what they are and we cant move loops or the other jmp instructions as they can only jmp 127 bytes(i guesss we could implment them as "dec rcx jnz .loop")
                     break
-                if len(replace_instructions) == 1:#If the instruciton precinging a call is a jump or ret the call will never get traced something if of
+                if len(replace_instructions) == 1:#If the instruction preceding a call is a jump or ret the call will never get traced something if of
                     if inst_name == 'ret' or inst_name == "jmp":
                         break
                 free_space += inst[1]
@@ -2598,6 +2631,7 @@ def generate_clean_asm_func_call(code, in_two_parts = False, debug = False):
     assembly1 = f"\nlea rsp, [rsp-{rsp_ofset}]\ncall " + str(save_state_address) + "\n\n" + code.replace(";", "\n") +"\n"
     if debug:
         assembly1 = f"\nlea rsp, [rsp-{rsp_ofset}]\ncall " + str(debug_func_address) + "\n\n" + code.replace(";", "\n") +"\n"
+        raise Exception("debug not implemented")
     
     
     assembly2 = "call " + str(restore_state_address) + "\n"
@@ -2611,36 +2645,66 @@ def generate_clean_asm_func_call(code, in_two_parts = False, debug = False):
 
 def run_loadlibrary_in_process(h_process: int, dll_path: str) -> None:
     """Write dll_path to target and call LoadLibraryA via injected assembly."""
-    global load_dll_tid
+    global load_dll_tid, suspended
     dll_path = os.path.abspath(dll_path)
     print("trying to inject dll")
+    
+    basename = os.path.basename(dll_path)
+    
+    #We need to unsuspend the proccess since there is some type of lock stoping the loading when not in suspended mode We just have to hope that other hooks dont have time to run
+    if suspended:
+        hook_lib.NtResumeProcess(h_process)
+    print("unsuspend to inject")
+
     thread = hook_lib.load_library_in_remote(h_process, dll_path)
     
+    # wait untill dll is properly loaded
+    while True:
+        try:
+            mods = hook_lib.enumerate_modules(h_process, base_name = True)
+            if basename in mods:
+                break
+        except:
+            raise Exception("enumerate_modules failed when wating for dll to load")
     
-
-def lookup_calltrace_exports(handle):
-    global call_trace_dll_ready
-    if call_trace_dll_ready:
-        return
-    call_trace_dll_ready = True
+    print("suspend again")
+    if suspended:
+        hook_lib.NtSuspendProcess(h_process)
     
+def fixup_calltrace_exports(handle):
+    global call_tracer_dll_func
     dll_name = "calltracer.dll"
-    pe = pefile.PE(dll_name)
     basename = os.path.basename(dll_name)
     mods = hook_lib.enumerate_modules(handle, base_name = True)
     if basename in mods:
         base_addr = mods[basename]["base"]
+        for name in call_tracer_dll_func:
+            call_tracer_dll_func[name] += base_addr
     else:
-        print("calltracer dll not loaded when thread exited")
-        return
+        raise Exception("calltracer dll not loaded")
+def fixup_calltrace_exports_thunks(handle):
+    global call_tracer_dll_func, call_tracer_thunk_ready_addr
+    
+    
+    for name in call_tracer_dll_func:
+        jumpaddr_bytes = struct.pack("<Q", call_tracer_dll_func[name])
+        #Fill in thunk addrs jump address
+        hook_lib.write(handle, call_tracer_thunk_func_ptr[name], jumpaddr_bytes, do_checks = False)
+        
+    hook_lib.write(handle, call_tracer_thunk_ready_addr, bytes([1]), do_checks = False)
+
+def lookup_calltrace_exports():
+    global call_tracer_dll_func
+    dll_name = "calltracer.dll"
+    pe = pefile.PE(dll_name)
+    
 
     if hasattr(pe, "DIRECTORY_ENTRY_EXPORT"):
         for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
             if exp.name:
                 name = exp.name.decode()
                 rva = exp.address
-                virtual_address = base_addr + rva
-                call_tracer_dll_func[name] = virtual_address
+                call_tracer_dll_func[name] = rva
             else:
                 print("No export table found.")
         
@@ -2649,9 +2713,6 @@ def lookup_calltrace_exports(handle):
     
     
     
-
-
-
 def get_pdata(file_name: str, base_addr: int, exe_basic_name: str) -> None:
     """Parse .pdata from file on disk and populate function ranges & IDs."""
     global pdata, pdata_functions, exe_entry_address, pdata_function_ids, area_for_function_table, pdata_index

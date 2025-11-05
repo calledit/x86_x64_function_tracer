@@ -134,6 +134,14 @@ def print_traces(traces, stack_offset, contains_exits):
     stack_height = stack_offset
     for trace in traces:
         
+        func_addr = None
+        
+        if trace.type_str == "enter":
+            if trace.function_ordinal in ordinal2addr:
+                func_addr = ordinal2addr[trace.function_ordinal]
+        elif trace.type_str == "call":
+            func_addr = trace.target_address
+            
         if trace.type_str == 'exit' or trace.type_str == 'called':
             stack_height -= 1
         
@@ -144,8 +152,12 @@ def print_traces(traces, stack_offset, contains_exits):
             if trace.type_str == "exit" and trace.matching_enter == None:
                typ = 'un_matched_exit'
         
+        name = None
+            
+        if module_lookup is not None and func_addr is not None:
+            name = get_name_of_function(func_addr)
         
-        print(f"{trace.i:03d}", "  "*stack_height, typ, "func:", trace.function_ordinal, "tid:", trace.thread_id, 'ptr:', trace.return_address_pointer, 'callnum:', trace.call_num, trace.enter_type, trace.matching_enter, trace.return_address, trace.target_address)
+        print(f"{trace.i:03d}", "  "*stack_height, typ, "func:", trace.function_ordinal, "tid:", trace.thread_id, 'ptr:', trace.return_address_pointer, 'callnum:', trace.call_num, trace.enter_type, trace.matching_enter, trace.return_address, trace.target_address, name)
         
         
         
@@ -158,12 +170,19 @@ func_map = []
 functions = {}
 ordinal2addr = {}
 
+def show_top_counts(counts):
+    top_30 = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:30]
+
+    for key, val in top_30:
+        print(key, val)
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='shows binary call trace files')
     parser.add_argument('--file', type=str, required=True, help='Binary trace file')
     parser.add_argument('--modules', type=str, required=False, help='File with modules')
     parser.add_argument('--map', type=str, required=False, help='File with modules')
     parser.add_argument('--lookup', type=int, required=False, help='Address to lookup')
+    parser.add_argument("--count", action="store_true", help="Count traces")
     args = parser.parse_args()
     
     
@@ -194,6 +213,7 @@ if __name__ == '__main__':
     i=0
     contains_exits = False
     call_stacks = {}
+    counts = {}
     return_stack = []
     un_matched_exits = []
     traces = []
@@ -256,8 +276,23 @@ if __name__ == '__main__':
             if module_lookup is not None and func_addr is not None:
                 name = get_name_of_function(func_addr)
             
-            print(f"{trace.i:03d}", "  "*stack_height, trace.type_str, "func:", trace.function_ordinal, "tid:", trace.thread_id, 'time:', trace.timestamp, 'callnum:', trace.call_num, trace.enter_type, trace.matching_enter, trace.return_address, trace.target_address, name)
-            
+            if not args.count:
+                print(f"{trace.i:03d}", "  "*stack_height, trace.type_str, "func:", trace.function_ordinal, "tid:", trace.thread_id, 'time:', trace.timestamp, 'callnum:', trace.call_num, trace.enter_type, trace.matching_enter, trace.return_address, trace.target_address, name)
+            elif trace.trace_type == 1:
+                if trace.function_ordinal not in counts:
+                    counts[trace.function_ordinal] = 0
+                counts[trace.function_ordinal] += 1
+                
+                if trace.i % 1000000 == 0 and trace.i != 0:
+                    pos = f.tell()  # bytes read so far
+                    mb = pos / (1024 * 1024)
+                    print("--- top counts at ("+str(trace.i)+", "+f"{mb:.2f} MB"+")---")
+                    show_top_counts(counts)
+                    sorted_count = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+                    sorted_count = {k: v for k, v in sorted_count}
+                    if trace.i % 5000000 == 0 and trace.i != 0:
+                        with open("output\count.json", "w") as wf:
+                            json.dump(sorted_count, wf, indent=2)
 
             if lift_stack:
                 call_stacks[thread_id].append(function_ordinal)
@@ -265,6 +300,11 @@ if __name__ == '__main__':
             #if i == 200:
             #    break
         #exit()
+        if args.count:
+            with open("output\count.json", "w") as wf:
+                sorted_count = sorted(counts.items(), key=lambda x: x[1], reverse=True)
+                sorted_count = {k: v for k, v in sorted_count}
+                json.dump(sorted_count, wf, indent=2)
         print("\n")
         if contains_exits:
             print("printing in hindsight allows you to acount for enter and exits effect on the call stack")
