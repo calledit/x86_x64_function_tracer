@@ -66,8 +66,12 @@ def get_name_of_function(address):
             if ":\\windows\\" in mod['path'].lower():
                 download_pdb.get_pdb_from_microsoft(mod['path'])
             if os.path.exists(pdb_file) and os.path.getsize(pdb_file) != 0:
-                addrs_names = Lookup([module_lookup[mod_name]])
-                module_lookup[mod_name] = dict(next(iter(addrs_names.addrs.values()))['addrs'])
+                try:
+                    addrs_names = Lookup([module_lookup[mod_name]])
+                    module_lookup[mod_name] = dict(next(iter(addrs_names.addrs.values()))['addrs'])
+                except:
+                    print("could not parse pdb for: ", mod_name)
+                    module_lookup[mod_name] = {}
         
         if not isinstance(module_lookup[mod_name], tuple):
             mod_lookup = module_lookup[mod_name]
@@ -176,6 +180,16 @@ def show_top_counts(counts):
     for key, val in top_30:
         print(key, val)
 
+def add_names_to_calls():
+    global functions
+    changed = False
+    for func in func_map:
+        for call in func['calls']:
+            if 'target_name' not in call and 'target' in call:
+                call['target_name'] = get_name_of_function(call['target'])
+                changed = True
+    return changed
+    
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='shows binary call trace files')
     parser.add_argument('--file', type=str, required=True, help='Binary trace file')
@@ -183,6 +197,7 @@ if __name__ == '__main__':
     parser.add_argument('--map', type=str, required=False, help='File with modules')
     parser.add_argument('--lookup', type=int, required=False, help='Address to lookup')
     parser.add_argument("--count", action="store_true", help="Count traces")
+    parser.add_argument("--supplement_map", action="store_true", help="Adds info to map")
     args = parser.parse_args()
     
     
@@ -201,12 +216,21 @@ if __name__ == '__main__':
                 functions[func['function_start_addr']] = func
                 ordinal2addr[func['ordinal']] = func['function_start_addr']
             build_func_index(func_map)
-    
+        
+        if args.supplement_map:
+            changed = add_names_to_calls()
+            if changed:
+                with open(args.map, "w") as f:
+                    json.dump(func_map, f, indent=2)
+    else:
+        args.supplement_map = False #you need a map to supplement
     
     if args.lookup is not None:
         name_of_address = get_name_of_function(args.lookup)
         print(name_of_address)
         exit()
+        
+    
     
     #print(get_mod_containing(140695557676265))
     #exit()
@@ -261,6 +285,12 @@ if __name__ == '__main__':
                 lift_stack = True
                 trace.call_num, trace.target_address = struct.unpack("<IQ", f.read(12))
                 func_addr = trace.target_address
+                if args.supplement_map:
+                    call = func_map[function_ordinal]['calls'][trace.call_num]
+                    if 'target' in call and call['target'] != trace.target_address:
+                        print("call target in trace does not mached target in map")
+                    
+                    call['target'] = trace.target_address
 
             if trace.trace_type == 4:# type 4 is function called
                 call_stacks[thread_id].pop()
@@ -297,9 +327,14 @@ if __name__ == '__main__':
             if lift_stack:
                 call_stacks[thread_id].append(function_ordinal)
             i+=1
-            #if i == 200:
-            #    break
-        #exit()
+        
+        
+        if args.supplement_map:
+            changed = add_names_to_calls()
+            if changed:
+                with open(args.map, "w") as f:
+                    json.dump(func_map, f, indent=2)
+        
         if args.count:
             with open("output\count.json", "w") as wf:
                 sorted_count = sorted(counts.items(), key=lambda x: x[1], reverse=True)

@@ -119,6 +119,7 @@ jump_writes = []
 #Thread Storage
 thread_storage_list_address = None
 thread_storage_list_addresses = {}
+single_tracing_address = None
 threads_to_setup = []
 area_for_function_table = None
 area_for_return_addr_linked_list = 3*8* 100000#this is how deap the recursion can be traced
@@ -153,7 +154,8 @@ redirect_return = True
 respect_prolog_size = False #If we wont replace any instructions after the said prolog size
 forbid_entry_tracing = False #does not add any tracing code just injects. For use in testing when program craches
 trace_calls = True
-only_trace_unknown_calls = False
+only_trace_unknown_calls = False #Only trace dynamic calls, calles which target is not hard coded in memory 
+use_single_tracing = False #Disables the tracepoint after it is hit the first time, usefull to redece the amount of tracing data together with only_trace_unknown_calls when maping dynamic calls.
 only_replace_single_instruction_init = False # Only replace the first instruciton in the function init
 only_allow_single_instruction_replacements = False # When tracing calls only allow one instruction replacement, leads to many uses of break point jumps whereever a 5 byte jump wont fit (breakpoint jumps are SLOW) ONLY applies to call replacements not INIT replacements.
 exclude_call_tracing_in_force_truncated_functions = True # if a function has been truncated (cause it contains data) dont trace calls
@@ -549,7 +551,7 @@ def allocate_close(process, address_close_to_code):
 
 def allocate_mem(process_handle, address_close_to_code: int) -> None:
     """Allocate remote memory regions."""
-    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, alocated_thread_storages
+    global register_save_address, code_injection_address, shell_code_address, thread_storage_list_address, alocated_thread_storages, single_tracing_address
     
     print("allocating memmory")
     # VirtualAllocEx signature configuration
@@ -560,8 +562,13 @@ def allocate_mem(process_handle, address_close_to_code: int) -> None:
         wintypes.DWORD,   # flAllocationType
         wintypes.DWORD,   # flProtect
     ]
-    #print(address_close_to_code)
-    #exit(0)
+    
+    nr_of_max_trace_points = 0
+    for call_info in call_map:
+        nr_of_max_trace_points += 2 #one byte for entry one for exit
+        
+        for call in call_info['calls']:
+            nr_of_max_trace_points += 2 #one byte for call one for called
 
     # Allocate small utility region (writable)
     ctypes.windll.kernel32.VirtualAllocEx.restype = ctypes.c_ulonglong
@@ -571,7 +578,7 @@ def allocate_mem(process_handle, address_close_to_code: int) -> None:
     print("remote_memory:", remote_memory)
     
     #we cant to keep the size as small as posible as relative addressing can only handle ofsets of +-2147483647
-    size = len(pdata_function_ids)*300 + 100000 #we do 300 bytes per function and 100000 bytes for other stuff
+    size = nr_of_max_trace_points*300 + 100000 #we do 300 bytes per tracepoint and 100000 bytes for other stuff
     shell_code_address = 0
     atempt = 1
     while shell_code_address == 0:
@@ -602,6 +609,7 @@ def allocate_mem(process_handle, address_close_to_code: int) -> None:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
     print("thread_storage_list_address:", thread_storage_list_address)
     
+    
     alocated_thread_storages = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, nr_of_prepared_alocations*8, 0x3000, 0x04)
     if alocated_thread_storages == 0:
         raise Exception(f"Failed to allocate memory in target process: {ctypes.WinError()}")
@@ -616,6 +624,9 @@ def allocate_mem(process_handle, address_close_to_code: int) -> None:
         hook_lib.write(process_handle, alocated_thread_storages + stor_id*8, struct.pack("<Q", thread_storage_address))
         
         #OLD code to do allocations using dll: hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + stor_id*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nret")
+    
+    if use_single_tracing:
+        single_tracing_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, nr_of_max_trace_points, 0x3000, 0x04)
 
 def inject_dll(process_handle):
     # Inject helper DLL with MinHook-based hooks
@@ -1709,7 +1720,7 @@ def add_instruction_redirect(
 
     Returns (jump_to_address, break_point_entry). jump_to_address is None/False on failure.
     """
-    global shell_code_address_offset, shell_code_address, use_calls_for_patching, call_map
+    global shell_code_address_offset, shell_code_address, use_calls_for_patching, call_map, single_tracing_address
 
     code: List[bytes] = []
     jump_to_address = shell_code_address + shell_code_address_offset
@@ -1832,12 +1843,28 @@ call {pop_value_from_linkedlist_address} ;places poped value at address r15-100 
         
         
         jump_table_address = new_instruction_address
-        
+        single_trace_jmp = ""
+        if use_single_tracing:
+            single_trace_location = single_tracing_address
+            single_trace_jmp = f"""
+            movabs rax, {single_trace_location}
+            cmp byte ptr [rax], 0
+            jne     .has_been_traced
+            jmp .do_trace
+            .has_been_traced:
+            add r12, {area_for_xsave64}
+            jmp .tracing_done
+            .do_trace:
+            mov     byte ptr [rax], 1"""
+            single_tracing_address += 1
+            
         enter_asm1 = strip_semicolon_comments(f"""
 
+{single_trace_jmp}
 mov rdx, {function_ordinal}
 call {add_entry_trace_address}
 
+.tracing_done:
 
 """+(f"""
 
@@ -1884,11 +1911,27 @@ call {push_value_from_linkedlist_address}
         new_function_return_address = jump_write_address + len(function_caller)+16
         
         if redirect_return:
-            exit_asm1 = strip_semicolon_comments(f"""
             
+            single_trace_jmp = ""
+            if use_single_tracing:
+                single_trace_location = single_tracing_address
+                single_trace_jmp = f"""
+                movabs rax, {single_trace_location}
+                cmp byte ptr [rax], 0
+                jne     .has_been_traced
+                jmp .do_trace
+                .has_been_traced:
+                add r12, {area_for_xsave64}
+                jmp .tracing_done
+                .do_trace:
+                mov     byte ptr [rax], 1"""
+                single_tracing_address += 1
+            exit_asm1 = strip_semicolon_comments(f"""
+
+{single_trace_jmp}     
 mov rdx, {function_ordinal}
 call {add_exit_trace_address}
-
+.tracing_done:
 
 ;Load return address from linked list
 add r12, {function_ordinal*8}
@@ -1996,13 +2039,22 @@ call {pop_value_with_sameRSP_from_linkedlist_address} #places poped value at add
                 f"mov {reg_to_use}, [rsp-{rsp_ofset}]\n" #restore r9
             )
             
-            
+            single_trace_jmp = ""
+            if use_single_tracing:
+                single_trace_location = single_tracing_address
+                single_trace_jmp = f"""
+                movabs rax, {single_trace_location}
+                cmp byte ptr [rax], 0
+                jne  .tracing_done
+                mov     byte ptr [rax], 1"""
+                single_tracing_address += 1
             
             call_asm = strip_semicolon_comments(f"""
+{single_trace_jmp}
 mov rdx, {function_ordinal}
 mov rdi, {call_num}
 call {add_call_trace_address}
-
+.tracing_done:
             """)
             
             
@@ -2132,11 +2184,20 @@ call {add_call_trace_address}
         if instruction_parts[0] == "call":
             if trace_this_call:
                 
+                if use_single_tracing:
+                    single_trace_location = single_tracing_address
+                    single_trace_jmp = f"""
+                    movabs rax, {single_trace_location}
+                    cmp byte ptr [rax], 0
+                    jne  .tracing_done
+                    mov     byte ptr [rax], 1"""
+                    single_tracing_address += 1
                 call_asm = strip_semicolon_comments(f"""
-                
+{single_trace_jmp}  
 mov rdx, {function_ordinal}
 mov rdi, {call_num}
 call {add_called_trace_address}
+.tracing_done:
 
                 """)
                 
