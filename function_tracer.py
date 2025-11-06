@@ -149,13 +149,15 @@ exe_name = None
 
 forbid_break_point_jumps = True # if set to try break point jumps are not used (meaning some functions that need them wont be traced)
 use_calls_for_patching = False #Replaces jumps with calls. Slower than jumps as the return address needs to be captured, saved then restored. Using a jump techic uses 2 instructions using calls uses about 150 instructions and multiple memmory writes and reads 
-redirect_return = False
+redirect_return = True
 respect_prolog_size = False #If we wont replace any instructions after the said prolog size
 forbid_entry_tracing = False #does not add any tracing code just injects. For use in testing when program craches
-trace_all_calls = True
+trace_calls = True
+only_trace_unknown_calls = False
 only_replace_single_instruction_init = False # Only replace the first instruciton in the function init
 only_allow_single_instruction_replacements = False # When tracing calls only allow one instruction replacement, leads to many uses of break point jumps whereever a 5 byte jump wont fit (breakpoint jumps are SLOW) ONLY applies to call replacements not INIT replacements.
 exclude_call_tracing_in_force_truncated_functions = True # if a function has been truncated (cause it contains data) dont trace calls
+force_all_detours = False #if you want to force detorring when if there was no need (for debuging)
 
 if forbid_entry_tracing and redirect_return:
     raise ValueError("cant forbid forbid_entry_tracing when also redirecting return")
@@ -165,25 +167,8 @@ call_exclusions = [
 ]
 
 enter_exclusions = [
-    #2666
 ]
 
-function_exclusions = [
-    2666, #NOTEPAD++
-    5788, #NOTEPAD++
-    5751, #NOTEPAD++
-    5215, #NOTEPAD++
-    8027, #NOTEPAD++
-    5596, #NOTEPAD++
-
-    ##SLOW
-    2616,
-    158,
-    4725,
-    5196,
-    8977,
-    5471
-]
 
 rsp_ofset = 128
 
@@ -1628,14 +1613,19 @@ def hook_calls(process_handle) -> None:
         #    function_exclusions.append(pdata_ordinal)
         
         
+        
         if pdata_ordinal not in function_exclusions:
             instructions = truncate_instructions(disassembled_functions[function_start_addr], end_addr)
-            doing_calls = trace_all_calls
+            
+            print("fixing_func:", pdata_ordinal)
+            doing_calls = trace_calls
             if end_addr is not None:
                 if exclude_call_tracing_in_force_truncated_functions:
                     doing_calls = False
             
             insert_break_at_calls(process_handle, instructions, function_id, function_start_addr, pdata_ordinal, doing_init, doing_calls, prolog_size)
+            
+            print("\n\n\n\n")
         
     
     
@@ -1711,7 +1701,7 @@ def add_instruction_redirect(
     is_init: bool,
     instructions: List[Tuple[int, int, str, str]],
     process_handle,
-    call_num,
+    belived_call_num,
     doing_calls,
     ends_with_jump = False
 ) -> Tuple[Optional[int], int]:
@@ -1719,7 +1709,7 @@ def add_instruction_redirect(
 
     Returns (jump_to_address, break_point_entry). jump_to_address is None/False on failure.
     """
-    global shell_code_address_offset, shell_code_address, use_calls_for_patching
+    global shell_code_address_offset, shell_code_address, use_calls_for_patching, call_map
 
     code: List[bytes] = []
     jump_to_address = shell_code_address + shell_code_address_offset
@@ -1817,10 +1807,11 @@ call {pop_value_from_linkedlist_address} ;places poped value at address r15-100 
         jmp_to_shellcode = b"\xCC"
         jump_breakpoint = insert_location
     
+    has_added_tracing = False
     do_use_trace = True
     if forbid_break_point_jumps:
         if jump_type == "2byte" or jump_type == "1byte":
-            print("trace of function "+str(function_ordinal)+"  call ("+str(call_num)+")/ call ignored due to needing breakpoint")
+            print("trace of function "+str(function_ordinal)+"  call ("+str(belived_call_num)+")/ call ignored due to needing breakpoint")
             do_use_trace = False
     
     if jump_breakpoint is not None and do_use_trace:
@@ -1870,6 +1861,7 @@ call {push_value_from_linkedlist_address}
                 enter_func_call_code = b""
         else:
             enter_func_call_code = asm(generate_clean_asm_func_call(enter_asm)+"\n"+save_call_jump_ret, jump_table_address)
+            has_added_tracing = True
         
         jump_write_address = jump_table_address + len(enter_func_call_code)
         
@@ -1934,27 +1926,46 @@ call {pop_value_with_sameRSP_from_linkedlist_address} #places poped value at add
             code.append(save_retaddres_code)
             new_instruction_address += len(save_retaddres_code)
 
-
+    func_desc = call_map[function_ordinal]
+    
     for instruciton_dat in instructions:
         instruction_address = instruciton_dat[0]
         instruction_len = instruciton_dat[1]
         instruction_asm = capstone_2_keystone(instruciton_dat[2])
         instruction_parts = instruction_asm.split(" ")
         
-        
+        call_num = -1
         static_call = False
         
         rip_to = None
         contains_rip = False
         if "rip" in instruction_asm:
             contains_rip = True
-            
+        
+        trace_this_call = True
+        if not doing_calls:
+            trace_this_call = False
+        
         if instruction_parts[0] == "call":
             reg, reg2, reg2_mult, indirect, offset = asm2regaddr(instruciton_dat)
             
-                    
+            call_has_known_target = True
+            for call in func_desc['calls']:
+                if call['address'] == instruction_address:
+                    call_num = call['call_num']
+                    if 'target' not in call:
+                        call_has_known_target = False
+                    break;
+       
+            if only_trace_unknown_calls:
+                
+                if call_has_known_target:
+                    trace_this_call = False
         
-        if instruction_parts[0] == "call" and call_num not in excluded_calls and doing_calls:
+            if call_num in excluded_calls:
+                trace_this_call = False
+        
+        if instruction_parts[0] == "call" and trace_this_call:
             
             
             #Make sure we are using a tempreg that is not used
@@ -1974,14 +1985,14 @@ call {pop_value_with_sameRSP_from_linkedlist_address} #places poped value at add
             
             
             target_resolver = get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, reg_to_use)
-            print("call info:", "nr:", call_num, "asm:", instruction_asm, "resolver:", target_resolver, "reg dat:", reg, reg2, reg2_mult, indirect, offset, reg_to_use, "new_addr:", new_instruction_address, "old_addr:", instruction_address)
+            print("\ncall info:", function_ordinal, "nr:", call_num, "asm:", instruction_asm, "resolver:", target_resolver, "reg dat:", reg, reg2, reg2_mult, indirect, offset, reg_to_use, "new_addr:", new_instruction_address, "old_addr:", instruction_address)
             
             
             
             save_target_asm = (
                 f"mov [rsp-{rsp_ofset}], {reg_to_use} \n" #Save r9
                 f"{target_resolver}\n" #fill r9 with target address # {target_resolver}
-                f"mov [rsp-8], {reg_to_use}\n" #save r9 in the space we made on the stack
+                f"mov [rsp-8], {reg_to_use}\n" #save r9 in the space where the return address will be filled in
                 f"mov {reg_to_use}, [rsp-{rsp_ofset}]\n" #restore r9
             )
             
@@ -1989,7 +2000,7 @@ call {pop_value_with_sameRSP_from_linkedlist_address} #places poped value at add
             
             call_asm = strip_semicolon_comments(f"""
 mov rdx, {function_ordinal}
-mov rsi, {call_num}
+mov rdi, {call_num}
 call {add_call_trace_address}
 
             """)
@@ -1999,7 +2010,7 @@ call {add_call_trace_address}
             
             call_func_call_code = asm(save_target_asm + generate_clean_asm_func_call(call_asm), new_instruction_address)
             
-            
+            has_added_tracing = True
             code.append(call_func_call_code)
             new_instruction_address += len(call_func_call_code)
             
@@ -2013,52 +2024,52 @@ call {add_call_trace_address}
         
         else: #Not a call
             pass
-        if True:
-            # RIP-relative handling FIXMEE This wont handle a scenario like [rip + eax*1 + 123]
-            if "rip +" in instruction_asm or "rip -" in instruction_asm:
-                print("Accounting for altered RIP", instruction_asm)
-                
-                convs  = ""
-                if "rip +" in instruction_asm:
-                    sign = "+"
-                elif "rip -" in instruction_asm:
-                    sign = "-"
-                    convs = "-"
-                else:
-                    raise ValueError("Not Implemnted")
-                
-                initial_part = instruction_asm.split("]")[0]
-                arg_part = initial_part.split("[")[-1]
-                parts = arg_part.split(" ")
-                assert (len(parts) == 3), "only support [rip + 123] not what this is: "+instruction_asm
-                off_str = convs + parts[-1]
-                off = int(off_str, 16)
-                diff = new_instruction_address - instruction_address
-                instruct_off = off-diff
-                if instruct_off > 2147483647:
-                    do_use_trace = False
-                    raise Exception("altering: "+instruction_asm + "new offset "+str(instruct_off)+" to large")
-                
-                rip_to = instruction_address + instruction_len + off
-                
+        
+        # RIP-relative handling 
+        if "rip +" in instruction_asm or "rip -" in instruction_asm:
+            print("Accounting for altered RIP", instruction_asm)
+            
+            convs  = ""
+            if "rip +" in instruction_asm:
+                sign = "+"
+            elif "rip -" in instruction_asm:
+                sign = "-"
+                convs = "-"
+            else:
+                raise ValueError("Not Implemnted")
+            
+            initial_part = instruction_asm.split("]")[0]
+            arg_part = initial_part.split("[")[-1]
+            parts = arg_part.split(" ")
+            assert (len(parts) == 3), "only support [rip + 123] not what this is: "+instruction_asm
+            off_str = convs + parts[-1]
+            off = int(off_str, 16)
+            diff = new_instruction_address - instruction_address
+            instruct_off = off-diff
+            if instruct_off > 2147483647:
+                do_use_trace = False
+                raise Exception("altering: "+instruction_asm + "new offset "+str(instruct_off)+" to large")
+            
+            rip_to = instruction_address + instruction_len + off
+            
+            if instruct_off >= 0:
+                replace_arg = "rip + "+ str(instruct_off)
+            else:
+                replace_arg = "rip "+ str(instruct_off)
+            
+            instruction_asm_test = instruction_asm.replace(arg_part, replace_arg)
+            
+            new_code = asm(instruction_asm_test, new_instruction_address)
+            new_code_len = len(new_code)
+            if instruction_len != new_code_len:
+                instruct_off -= (new_code_len - instruction_len)
                 if instruct_off >= 0:
                     replace_arg = "rip + "+ str(instruct_off)
                 else:
                     replace_arg = "rip "+ str(instruct_off)
-                
                 instruction_asm_test = instruction_asm.replace(arg_part, replace_arg)
                 
-                new_code = asm(instruction_asm_test, new_instruction_address)
-                new_code_len = len(new_code)
-                if instruction_len != new_code_len:
-                    instruct_off -= (new_code_len - instruction_len)
-                    if instruct_off >= 0:
-                        replace_arg = "rip + "+ str(instruct_off)
-                    else:
-                        replace_arg = "rip "+ str(instruct_off)
-                    instruction_asm_test = instruction_asm.replace(arg_part, replace_arg)
-                    
-                instruction_asm = instruction_asm_test
+            instruction_asm = instruction_asm_test
 
         
         is_jump = instruction_asm.startswith("j")
@@ -2073,13 +2084,10 @@ call {add_call_trace_address}
                 print("jump to function with address: "+ str(rip_to))
             else:
                 ref_instructions[instruction_address] = rip_to
-                #raise Exception("Trying to jump to non function: "+str(rip_to))
-        #    raise Exception("complex jump will fail unless it is the final instruction: "+ instruction_asm)
-        #elif instruction_parts[0] in ("cmp",):
-        #    raise Exception("non-movable instruction (Should probably just remove this exception cmp is movable): "+ instruction_asm)
 
-        if instruction_parts[0] == "call" and doing_calls:
-            #We just filled rsp-8 with the target address
+
+        if instruction_parts[0] == "call" and trace_this_call:
+            #We prevoisly filled rsp-8 with the target address
             
             jump_diretly_back = False ##only works if the call is the last moved instruction
             if jump_diretly_back:
@@ -2100,76 +2108,6 @@ call {add_call_trace_address}
                 
             code.append(new_code)
             new_instruction_address += len(new_code)
-            
-        elif static_call and False:
-
-            
-            if indirect:
-                asd = (
-                #this might be the issue we are overwriting [rsp-8] and -16 and -24
-                    "push rax;" #1. make space for return address on stack 
-                    "push rax;" #2. save rax
-                    "mov rax, [RIP + 30];" #3. fill rax with pointer to function address
-                    "mov rax, [rax];" #4. fill rax with function address
-                    "push rax;" #5. save function address
-                    "pop rax;" # 6 decrese rsp but we still care about the function address we saved on the stack in step 5
-                    "mov rax, [RIP + 10];" #7. fill rax with return address
-                    "mov [RSP+0x8], rax;" #8. move return addess in rax to the place we made on the stack at step 1
-                    "pop rax;" #9. restore rax 
-                    "jmp [rsp - 16];" #10. jump to target function
-                    )
-            else:
-                asd = (
-                    "push rax;" #1. make space for return address on stack 
-                    "push rax;" #2. save rax
-                    "mov rax, [RIP + 12];" #3. fill rax with return address
-                    "mov [RSP+0x8], rax;" #4. move return addess in rax to the place we made on the stack at step 1
-                    "pop rax;" #5. restore rax 
-                    "jmp [rip + 8];" # jump to target function
-                    )
-            
-            new_code = asm(asd, new_instruction_address)
-
-            code.append(new_code)
-            new_instruction_address += len(new_code)
-            
-            #if the calle expects a certain return address set jump_back_address to True, Doing so means you cant track the return which is not good
-            jump_diretly_back = False
-            #save the return position
-            if jump_diretly_back:
-                new_code = struct.pack("<Q", jump_back_address)
-            else:
-                new_code = struct.pack("<Q", new_instruction_address+16)
-            code.append(new_code)
-            new_instruction_address += len(new_code)
-            
-            #save the target function/pointer that we are trying to call
-            new_code = struct.pack("<Q", static_call)
-            code.append(new_code)
-            new_instruction_address += len(new_code)
-
-        # If the function we are patching depends on the return address, problematicly this does not let us capture the return.
-        elif static_call and False: #This code path manually sets the return address to the real next instruciton then jumps to the function
-            asd = "push rax;push rax;mov rax, [RIP + 12];mov [RSP+0x8], rax;pop rax;jmp [rip + 8];"
-            new_code = asm(asd, new_instruction_address)
-
-            code.append(new_code)
-            new_instruction_address += len(new_code)
-            
-            #save the return position
-            raise Exception("we are now jumping to jump_back_addressthis only wors if this is the last instruction in the list we are moving, and it wont be tracing the return")
-            new_code = struct.pack("<Q", jump_back_address)
-            code.append(new_code)
-            new_instruction_address += len(new_code)
-            
-            #save the target function that we are trying to call
-            target = static_call
-            new_code = struct.pack("<Q", target)
-            code.append(new_code)
-            new_instruction_address += len(new_code)
-            
-            print('function_id:', get_function_id(target))
-            
             
         else:
             
@@ -2192,12 +2130,12 @@ call {add_call_trace_address}
         
         
         if instruction_parts[0] == "call":
-            if call_num not in excluded_calls and doing_calls:
+            if trace_this_call:
                 
                 call_asm = strip_semicolon_comments(f"""
                 
 mov rdx, {function_ordinal}
-mov rsi, {call_num}
+mov rdi, {call_num}
 call {add_called_trace_address}
 
                 """)
@@ -2210,7 +2148,6 @@ call {add_called_trace_address}
                 
             
             
-            call_num += 1
         
         moved_instructions[instruction_address] = (new_start_address, new_instruction_address)
         
@@ -2229,7 +2166,7 @@ call {add_called_trace_address}
     shellcode = b"".join(code)
     shell_len = len(shellcode)
 
-    if do_use_trace:
+    if do_use_trace and (has_added_tracing or force_all_detours):
         ass = ""
         for inst in instructions:
             ass += str(inst[2]) + ";"
@@ -2239,7 +2176,6 @@ call {add_called_trace_address}
         jump_writes.append((insert_location, jmp_to_shellcode))
     
 
-    return call_num
 
 
 def find_jumps_to_address(address):
@@ -2293,7 +2229,7 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
     #    print("skip instrumenting function:", function_address, func_id)
     #    return
     print("instrumenting:", function_address, func_id)
-    call_num = 0
+    belived_call_num = None
     init_free_space = 0
     doing_init = do_init
     
@@ -2382,20 +2318,38 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
                 
                 doing_init = False
                 print("relocating_init: ", init_instructions, "cur instruciton:", instruction[2])
-                call_num = add_instruction_redirect(
+                add_instruction_redirect(
                     function_ordinal,
                     function_address,
                     True,
                     init_instructions,
                     process_handle,
-                    call_num,
+                    belived_call_num,
                     doing_calls,
                     ends_with_jump = is_jump
                 )
         else:
             call_replace_instructions.append(instruction)
             if instruction_name == "call" and doing_calls:
+                
+                func_desc = call_map[function_ordinal]
+                call_has_known_target = True
+                for call in func_desc['calls']:
+                    if call['address'] == instruction_address:
+                        belived_call_num = call['call_num']
+                        if 'target' not in call:
+                            call_has_known_target = False
+                        break;
+                
+                trace_this_call = True
+                if only_trace_unknown_calls:
+                    if call_has_known_target:
+                        trace_this_call = False
                 search_call = True
+                
+                if not trace_this_call:
+                    search_call = False
+                    call_replace_instructions = []
         
         if search_call and doing_calls:
             
@@ -2423,13 +2377,13 @@ def insert_break_at_calls(process_handle, instructions: List[Tuple[int, int, str
             replace_instructions = list(reversed(replace_instructions))
             
             
-            call_num = add_instruction_redirect(
+            add_instruction_redirect(
                 function_ordinal,
                 function_address,
                 False,
                 replace_instructions,
                 process_handle,
-                call_num,
+                belived_call_num,
                 doing_calls
             )
              
@@ -2524,23 +2478,6 @@ def get_target_asm_resolver(reg, reg2, reg2_mult, indirect, offset, where):
        
     
     return f"mov {where}, 0"
-    
-    if indirect:
-        asmcode += "[ "
-    target_addr = offset
-    if reg is not None:
-        asmcode += reg.lower()
-        if offset != 0:
-            if offset > 0:
-                asmcode += " + " +str(abs(offset))
-            else:
-                asmcode += " - " +str(abs(offset))
-    else:
-        asmcode += str(offset)
-        
-    if indirect:
-        asmcode += " ]"
-    return asmcode
 
 def is_reg(arg):
     try:

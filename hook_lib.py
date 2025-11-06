@@ -271,9 +271,10 @@ def try_start_executable(exe_path):
     Try to start exe_path using subprocess.Popen.
     Returns PID if started and appears in process list within timeout, else None.
     """
+    exe_folder = os.path.dirname(exe_path)
     # If exe_path is just a name, rely on PATH / cwd
     try:
-        proc = subprocess.Popen([exe_path], shell=False)
+        proc = subprocess.Popen([exe_path], cwd=exe_folder, shell=False)
     except FileNotFoundError as e:
         # not found on PATH / as-is
         return None, f"Could not start '{exe_path}': {e}"
