@@ -148,14 +148,15 @@ functions_end = {}
 exe_basic_name = None
 exe_name = None
 
-forbid_break_point_jumps = True # if set to try break point jumps are not used (meaning some functions that need them wont be traced)
+forbid_break_point_jumps = False # if set to try break point jumps are not used (meaning some functions that need them wont be traced)
 use_calls_for_patching = False #Replaces jumps with calls. Slower than jumps as the return address needs to be captured, saved then restored. Using a jump techic uses 2 instructions using calls uses about 150 instructions and multiple memmory writes and reads 
 redirect_return = True
 respect_prolog_size = False #If we wont replace any instructions after the said prolog size
 forbid_entry_tracing = False #does not add any tracing code just injects. For use in testing when program craches
 trace_calls = True
-only_trace_unknown_calls = False #Only trace dynamic calls, calles which target is not hard coded in memory 
-use_single_tracing = False #Disables the tracepoint after it is hit the first time, usefull to redece the amount of tracing data together with only_trace_unknown_calls when maping dynamic calls.
+only_trace_unknown_calls = True #Only trace dynamic calls, calles which target is not hard coded in memory 
+use_single_tracing = True #Disables the tracepoint after it is hit the first time, usefull to redece the amount of tracing data together with only_trace_unknown_calls when maping dynamic calls.
+use_single_tracing_entry = False #same as use_single_tracing but for entry and exit
 only_replace_single_instruction_init = False # Only replace the first instruciton in the function init
 only_allow_single_instruction_replacements = False # When tracing calls only allow one instruction replacement, leads to many uses of break point jumps whereever a 5 byte jump wont fit (breakpoint jumps are SLOW) ONLY applies to call replacements not INIT replacements.
 exclude_call_tracing_in_force_truncated_functions = True # if a function has been truncated (cause it contains data) dont trace calls
@@ -625,7 +626,7 @@ def allocate_mem(process_handle, address_close_to_code: int) -> None:
         
         #OLD code to do allocations using dll: hook_lib.inject_asm(process_handle, "sub rsp, 40\nmov     rcx, "+str(alocated_thread_storages + stor_id*8)+"\nmovabs rax, "+str(call_tracer_dll_func['alloc_thread_storage'])+"\n\ncall rax\nadd rsp, 40\nret")
     
-    if use_single_tracing:
+    if use_single_tracing or use_single_tracing_entry:
         single_tracing_address = ctypes.windll.kernel32.VirtualAllocEx(process_handle, None, nr_of_max_trace_points, 0x3000, 0x04)
 
 def inject_dll(process_handle):
@@ -1292,8 +1293,26 @@ def analyse_executable_code(process_handle):
     
     print("disassemble and analyse instructions", len(pdata_functions))
     
-    for function_start_addr, function_end_addr, flags, pdata_ordinal, prolog_size in pdata_functions:
+    for i, (function_start_addr, function_end_addr, flags, pdata_ordinal, prolog_size) in enumerate(pdata_functions):
+
         function_id = get_function_id(function_start_addr)
+        
+        # next element (if any)
+        next_elem = pdata_functions[i + 1] if i + 1 < len(pdata_functions) else None
+        next_function_starts_imidiatly = False
+        if next_elem is not None:
+            if function_end_addr == next_elem[0]:
+                next_function_starts_imidiatly = True
+        
+        continues_in_to_next = None
+        if next_function_starts_imidiatly:
+            if next_elem[2] >= 4:
+                continues_in_to_next = get_function_id(next_elem[0])
+            else:
+                pass
+                #print(function_id, "continue in to NON funclet")
+            
+        
         func_len = function_end_addr - function_start_addr
         print("disassemble:", function_id, "len:", func_len)
         
@@ -1361,6 +1380,7 @@ def analyse_executable_code(process_handle):
                     "asm": instruction_asm,
                     "indirect": indirect,
                 }
+                
                 if (reg is None or (reg is not None and reg.lower() == "rip")) and offset is not None:
                     if not indirect:
                         rip_to = offset
@@ -1401,6 +1421,7 @@ def analyse_executable_code(process_handle):
                     function_calls.append(info)
                 if is_jump:
                     info['jump_num'] = len(function_jumps)
+                    info.pop('return_address', None)
                     function_jumps.append(info)
         
         end_addr = None
@@ -1413,10 +1434,14 @@ def analyse_executable_code(process_handle):
             "function_start_addr": function_start_addr,
             "function_end_addr": function_end_addr,
             "function_force_end_truncate": end_addr,
+            'continues_in_to_next': False,
             "unlisted": False,
             "flags": flags,
+            "jumps": function_jumps,
             "calls": function_calls
         }
+        if continues_in_to_next is not None:
+            function_map['continues_in_to_next'] = continues_in_to_next
         call_map.append(function_map)
     
     if save_cache:
@@ -1526,16 +1551,39 @@ def analyse_executable_code(process_handle):
                 if classfied is not None:
                     
                     thunk_jmps = []
+                    thunk_calls = []
+                    function_jumps = []
                     #We check the sure classifications for jumps
-                    if classfied == "thunk" or classfied == "mini_func":
+                    if classfied == "thunk" or classfied == "mini_func" or True:
                         for inst in instructions:
                             
                             if max_end == inst[0]:
                                 break
                             
+                            is_call_inst = instruction_name == "call"
+                            
                             is_jump = inst[2].startswith("j")
-                            if is_jump:
+                            if is_jump or is_call_inst:
+
                                 reg, reg2, reg2_mult, indirect, offset = asm2regaddr(inst)
+                                info = {
+                                    "address": inst[0],
+                                    "return_address": inst[0] + inst[1],
+                                    "asm": inst[2],
+                                    "indirect": indirect,
+                                }
+                                if (reg is None or (reg is not None and reg.lower() == "rip")) and offset is not None:
+                                    if not indirect:
+                                        rip_to = offset
+                                        info['target'] = rip_to
+                                    else:
+                                        info['target_pointer'] = offset
+                                        try:
+                                            trg = read_ptr(process_handle, offset)
+                                        except:
+                                            trg = None
+                                        info['target'] = trg
+                                
                                 to_addr = None
                                 if reg is None and reg2 is None:
                                     to_addr = offset
@@ -1546,12 +1594,22 @@ def analyse_executable_code(process_handle):
                                             print("could not read from indirect address:", offset, "asm:", inst[2])
                                             to_addr = None
                                     
-                                    if to_addr is not None:
+                                    if is_jump and to_addr is not None:
                                         thunk_jmps.append(to_addr)
                                         
                                         if to_addr not in jumps:
                                             jumps[to_addr] = []
-                                        jumps[to_addr].append(instruction)
+                                        jumps[to_addr].append(inst)
+                                        
+                                        
+                                if is_jump:
+                                    info['jump_num'] = len(function_jumps)
+                                    info.pop('return_address', None)
+                                    function_jumps.append(info)
+                                
+                                if is_call_inst:
+                                    info['call_num'] = len(thunk_calls)  
+                                    thunk_calls.append(info)
                     
                     size = max_end - func_addr
                     classfied_extra_functions.append({
@@ -1563,7 +1621,8 @@ def analyse_executable_code(process_handle):
                         "unlisted": True,
                         "thunk_jumps": thunk_jmps,
                         "flags": 0,
-                        "calls": []
+                        "jumps": function_jumps,
+                        "calls": thunk_calls
                     })
                     print("classfied:", classfied, "size:", size)
                 #print("\n")
@@ -1844,7 +1903,7 @@ call {pop_value_from_linkedlist_address} ;places poped value at address r15-100 
         
         jump_table_address = new_instruction_address
         single_trace_jmp = ""
-        if use_single_tracing:
+        if use_single_tracing_entry:
             single_trace_location = single_tracing_address
             single_trace_jmp = f"""
             movabs rax, {single_trace_location}
@@ -1913,7 +1972,7 @@ call {push_value_from_linkedlist_address}
         if redirect_return:
             
             single_trace_jmp = ""
-            if use_single_tracing:
+            if use_single_tracing_entry:
                 single_trace_location = single_tracing_address
                 single_trace_jmp = f"""
                 movabs rax, {single_trace_location}

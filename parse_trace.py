@@ -192,7 +192,7 @@ def add_names_to_calls():
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='shows binary call trace files')
-    parser.add_argument('--file', type=str, required=True, help='Binary trace file')
+    parser.add_argument('--file', type=str, required=False, help='Binary trace file')
     parser.add_argument('--modules', type=str, required=False, help='File with modules')
     parser.add_argument('--map', type=str, required=False, help='File with modules')
     parser.add_argument('--lookup', type=int, required=False, help='Address to lookup')
@@ -231,6 +231,8 @@ if __name__ == '__main__':
         exit()
         
     
+    if args.file is None:
+        exit()
     
     #print(get_mod_containing(140695557676265))
     #exit()
@@ -293,7 +295,8 @@ if __name__ == '__main__':
                     call['target'] = trace.target_address
 
             if trace.trace_type == 4:# type 4 is function called
-                call_stacks[thread_id].pop()
+                if len(call_stacks[thread_id]) != 0:
+                    call_stacks[thread_id].pop()
                 trace.type_str = "called"
                 trace.call_num, = struct.unpack("<I", f.read(4))
                         
@@ -307,7 +310,13 @@ if __name__ == '__main__':
                 name = get_name_of_function(func_addr)
             
             if not args.count:
-                print(f"{trace.i:03d}", "  "*stack_height, trace.type_str, "func:", trace.function_ordinal, "tid:", trace.thread_id, 'time:', trace.timestamp, 'callnum:', trace.call_num, trace.enter_type, trace.matching_enter, trace.return_address, trace.target_address, name)
+                if True:
+                    print(f"{trace.i:03d}", "  "*stack_height, trace.type_str, "func:", trace.function_ordinal, "tid:", trace.thread_id, 'time:', trace.timestamp, 'callnum:', trace.call_num, trace.enter_type, trace.matching_enter, trace.return_address, trace.target_address, name)
+                else:
+                    if trace.i % 1000000 == 0 and trace.i != 0:
+                        pos = f.tell()  # bytes read so far
+                        mb = pos / (1024 * 1024)
+                        print("--- processing ("+str(trace.i)+", "+f"{mb:.2f} MB"+")---")
             elif trace.trace_type == 1:
                 if trace.function_ordinal not in counts:
                     counts[trace.function_ordinal] = 0
